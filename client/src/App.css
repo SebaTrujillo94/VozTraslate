@@ -1,0 +1,26 @@
+/* ── App Layout ────────────────────────────────────────────────────── */
+.app {
+  position: relative;
+  min-height: 100vh;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-primary);
+  overflow: hidden;
+}
+
+/* ── Global Theme Toggle (top-right on login/join screens) ────────── */
+.global-theme-toggle {
+  position: fixed; top: 20px; right: 20px; z-index: 50;
+  width: 42px; height: 42px; border-radius: 50%;
+  background: var(--bg-card); border: 1px solid var(--border-glass);
+  backdrop-filter: blur(12px); cursor: pointer; font-size: 1.1rem;
+  display: flex; align-items: center; justify-content: center;
+  transition: all var(--transition-normal);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+.global-theme-toggle:hover {
+  transform: scale(1.1) rotate(15deg);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+}
