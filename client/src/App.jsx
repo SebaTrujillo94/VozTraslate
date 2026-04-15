@@ -1,22 +1,29 @@
 import { useState, useEffect } from 'react';
-import LoginScreen from './components/LoginScreen';
+import LoginScreen      from './components/LoginScreen';
+import ChannelDashboard from './components/ChannelDashboard';
 import { getToken, clearToken, getMe } from './services/api';
 import './App.css';
 
 export default function App() {
-  // el tema de color
-  const [theme, setTheme] = useState(() => localStorage.getItem('voxbridge_theme') || 'dark');
+  // ── Tema de color (oscuro / claro) ───────────────────────────────────────
+  // Leemos el tema guardado en localStorage al iniciar; si no hay ninguno, usamos oscuro.
+  const [theme, setTheme] = useState(
+    () => localStorage.getItem('voxbridge_theme') || 'dark'
+  );
+
   useEffect(() => {
+    // Aplicamos el atributo al <html> para que los estilos CSS lo detecten
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('voxbridge_theme', theme);
   }, [theme]);
-  const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark');
 
-  // estado del usuario y sesion
-  const [profile, setProfile] = useState(null);
+  const toggleTheme = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
+
+  // ── Estado del usuario autenticado ────────────────────────────────────────
+  const [profile, setProfile]       = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
 
-  // al iniciar vemos si hay token para no pedir login de nuevo
+  // Al cargar la página, verificamos si hay una sesión activa en LocalStorage
   useEffect(() => {
     const token = getToken();
     if (token) {
@@ -24,15 +31,16 @@ export default function App() {
         .then((data) => {
           const user = data.user;
           setProfile({
-            id: user.id,
-            email: user.email,
-            username: user.username,
+            id:          user.id,
+            email:       user.email,
+            username:    user.username,
             displayName: user.displayName,
-            language: user.preferredLanguage || 'en',
-            avatarUrl: user.avatarUrl,
+            language:    user.preferredLanguage || 'en',
+            avatarUrl:   user.avatarUrl,
           });
         })
         .catch(() => {
+          // Si el token no es válido, lo borramos y mostramos el login
           clearToken();
         })
         .finally(() => setAuthLoading(false));
@@ -41,24 +49,26 @@ export default function App() {
     }
   }, []);
 
-  // funcion que se llama cuando se logra loguear
+  // Función que se ejecuta cuando el usuario termina de loguearse
   const handleLogin = (p) => {
     setProfile({
-      id: p.id,
-      email: p.email,
-      username: p.username,
+      id:          p.id,
+      email:       p.email,
+      username:    p.username,
       displayName: p.displayName,
-      language: p.preferredLanguage || p.language || 'en',
-      avatarUrl: p.avatarUrl,
+      language:    p.preferredLanguage || p.language || 'en',
+      avatarUrl:   p.avatarUrl,
     });
   };
 
-  // cerrar sesion y borrar token
+  // Función para cerrar sesión: borramos el token y limpiamos el estado
   const handleLogout = () => {
     clearToken();
     setProfile(null);
   };
 
+  // ── Pantalla de carga inicial ─────────────────────────────────────────────
+  // Se muestra brevemente mientras verificamos si existe una sesión guardada
   if (authLoading) {
     return (
       <div className="app" data-theme={theme}>
@@ -72,46 +82,26 @@ export default function App() {
     );
   }
 
-  const showLogin = !profile;
-
+  // ── Render principal ───────────────────────────────────────────────────────
   return (
     <div className="app" data-theme={theme}>
 
+      {/* Botón flotante para cambiar entre tema oscuro y claro */}
       <button className="global-theme-toggle" onClick={toggleTheme} title="Cambiar tema">
         {theme === 'dark' ? '☀️' : '🌙'}
       </button>
 
-      {showLogin && <LoginScreen onLogin={handleLogin} />}
-      
+      {/* Si no hay sesión activa, mostramos el formulario de login/registro */}
+      {!profile && <LoginScreen onLogin={handleLogin} />}
+
+      {/* Si hay sesión activa, mostramos el dashboard de canales (Épica 02) */}
       {profile && (
-         <div style={{ 
-            display: 'flex', 
-            flexDirection: 'column', 
-            alignItems: 'center', 
-            justifyContent: 'center', 
-            height: '100vh', 
-            zIndex: 10, 
-            position: 'relative',
-            color: 'var(--text-main)'
-          }}>
-            <h2 style={{ fontSize: '2rem', marginBottom: '10px' }}>✅ Registro y Login Correcto</h2>
-            <p style={{ fontSize: '1.2rem', color: '#a78bfa' }}>Te has registrado y accedido correctamente.</p>
-            <button 
-              onClick={handleLogout} 
-              style={{
-                marginTop: '30px', 
-                padding: '12px 24px', 
-                background: 'linear-gradient(90deg, #7c3aed, #3b82f6)', 
-                border: 'none', 
-                borderRadius: '8px', 
-                color: 'white', 
-                cursor: 'pointer',
-                fontWeight: 'bold'
-              }}>
-              Cerrar Sesión
-            </button>
-         </div>
+        <ChannelDashboard
+          profile={profile}
+          onCerrarSesion={handleLogout}
+        />
       )}
+
     </div>
   );
 }
