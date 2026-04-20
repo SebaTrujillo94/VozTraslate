@@ -136,6 +136,117 @@
   text-transform: uppercase;
 }
 
+/* ── Sección de Canales Activos (MVP) ────────────────────────────────── */
+.active-channels-section {
+  width: 100%;
+  max-width: 680px;
+  margin-bottom: 2.5rem;
+  animation: fadeIn 0.8s ease forwards;
+}
+
+.section-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 1.2rem;
+  padding-left: 0.5rem;
+  border-left: 3px solid var(--accent-purple);
+}
+
+.channels-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.2rem;
+}
+
+.channel-box {
+  background: var(--bg-card);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem;
+  cursor: pointer;
+  position: relative;
+  transition: all var(--transition-normal);
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.channel-box:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--border-active);
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-md);
+}
+
+.channel-box-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.channel-box-lang {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.2rem 0.5rem;
+  background: rgba(6, 182, 212, 0.12);
+  color: var(--accent-cyan);
+  border: 1px solid rgba(6, 182, 212, 0.25);
+  border-radius: var(--radius-sm);
+}
+
+.channel-box-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 1.05rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.channel-box-body p {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.3rem;
+}
+
+.channel-code-badge {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: #a78bfa;
+}
+
+.channel-creator-text {
+  font-style: italic;
+  opacity: 0.8;
+}
+
+.btn-delete-channel {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-size: 0.9rem;
+}
+
+.btn-delete-channel:hover {
+  background: rgba(239, 68, 68, 0.25);
+  transform: scale(1.1);
+  color: #fff;
+}
+
 /* ── Botón de cerrar sesión (abajo del todo) ───────────────────────── */
 .btn-logout {
   display: flex;
@@ -825,4 +936,166 @@
   .connection-status     { font-size: 0.7rem; padding: 0.2rem 0.5rem; }
   .code-value            { font-size: 0.72rem; }
   .members-bar           { padding: 0.4rem 1rem; }
+}
+
+/* -- Estilos del Chat ------------------------------ */
+
+.msg-original {
+  font-size: 0.75rem;
+  opacity: 0.6;
+  margin-top: 0.4rem;
+  border-top: 1px solid rgba(255,255,255,0.1);
+  padding-top: 0.2rem;
+}
+
+.msg-system.processing {
+  color: var(--accent-cyan);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.spinner-micro {
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: var(--accent-cyan);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  display: inline-block;
+}
+
+.typing-indicator {
+  color: var(--text-muted);
+}
+
+@keyframes pulse-dot {
+  0% { opacity: 0.2; }
+  20% { opacity: 1; }
+  100% { opacity: 0.2; }
+}
+
+.typing-indicator .dots {
+  display: inline-block;
+  animation: pulse-dot 1.5s infinite alternate;
+}
+
+.badge-new-messages {
+  position: absolute;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--gradient-primary);
+  color: white;
+  padding: 0.4rem 1rem;
+  border-radius: var(--radius-full);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow-glow);
+  animation: slideUp 0.3s ease forwards;
+  z-index: 10;
+}
+
+.badge-new-messages:hover {
+  filter: brightness(1.1);
+}
+
+.btn-sound-toggle {
+  background: transparent;
+  border: none;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0.2rem;
+  transition: transform var(--transition-fast);
+}
+
+.btn-sound-toggle:hover {
+  transform: scale(1.1);
+}
+
+.btn-record {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0 0.8rem;
+  transition: all var(--transition-normal);
+}
+
+.btn-record:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.btn-record.recording {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fca5a5;
+  animation: pulseBg 1.5s infinite;
+}
+
+@keyframes pulseBg {
+  0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+.channel-chat-view {
+  position: relative; /* Para que el badge-new-messages se posicione correcto */
+}
+
+/* ── Estilos para Modo Edición ────────────────────────────── */
+.btn-edit-msg {
+  position: absolute;
+  top: 0.2rem;
+  right: 0.2rem;
+  background: rgba(0, 0, 0, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  padding: 0.1rem 0.3rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: all var(--transition-fast);
+}
+
+.msg-bubble.propio:hover .btn-edit-msg {
+  opacity: 1;
+}
+
+.btn-edit-msg:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: scale(1.05);
+}
+
+.msg-bubble .msg-text {
+  position: relative; /* Para anclar el absolute del btn-edit-msg */
+}
+
+.edited-flag {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-left: 0.3rem;
+  opacity: 0.8;
+}
+
+.btn-cancel-edit {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-md);
+  color: #fca5a5;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0 0.8rem;
+  transition: all var(--transition-normal);
+}
+
+.btn-cancel-edit:hover {
+  background: rgba(239, 68, 68, 0.3);
+  color: #fff;
 }

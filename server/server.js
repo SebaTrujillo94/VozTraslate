@@ -1,48 +1,141 @@
-// ──────────────────────────────────────────────────────────────────────────────
-// server.js — Servidor principal de VozTranslate
-// Maneja la API REST y los eventos de WebSocket (Socket.io)
-// ──────────────────────────────────────────────────────────────────────────────
+// ********************************************************************************
+// server.js - El "corazón" de nuestra aplicación (El Servidor)
+// Aquí es donde manejamos las conexiones y los mensajes que mandan todos.
+// ********************************************************************************
 
 import express    from 'express';
 import cors       from 'cors';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import dotenv from 'dotenv';
+import Groq from 'groq-sdk';
 
-// ── Configuración inicial de Express ─────────────────────────────────────────
+// Aquí cargamos nuestra llave secreta del archivo .env para que funcione la IA
+dotenv.config();
+
+// Creamos la conexión con Groq usando nuestra API KEY (sin esto no traduce nada)
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+// ── Configuración para que el servidor empiece a escuchar ────────────────────
 const app = express();
-app.use(cors());
-app.use(express.json());
+app.use(cors()); // Esto permite que el cliente se conecte sin que el navegador se enoje
+app.use(express.json()); // Para que el servidor entienda si le mandamos datos en formato JSON
 
-// Ruta de salud para verificar que el servidor está activo
+// Esto es solo para saber si el servidor está vivo, si entras a /api/health verás el OK
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', mensaje: 'Servidor VozTranslate corriendo correctamente.' });
 });
 
-// ── Creamos el servidor HTTP y lo conectamos a Socket.io ─────────────────────
+// Unimos Express con Socket.io para poder tener chat en tiempo real
 const httpServer = createServer(app);
 
 const io = new Server(httpServer, {
   cors: { origin: '*', methods: ['GET', 'POST'] },
 });
 
-// ── Estructuras de datos en memoria ──────────────────────────────────────────
+// ── Aquí es donde guardamos las cosas mientras el programa está prendido ──────
 
-// Canales abiertos. Clave = código (ej: "XJ9-4K2L")
-// Valor = { nombre, creador, idioma, codigo, historial }
+// Lista de canales abiertos (como salones de chat)
 const canales = new Map();
 
-// Registra qué canal y usuario usa cada socket.
-// Clave = socket.id  |  Valor = { codigoCanal, username, idioma }
-// Sirve para saber a quién notificar cuando alguien se desconecta.
+// Para saber qué persona está en qué canal
 const socketCanal = new Map();
 
-// Miembros actualmente conectados a cada canal.
-// Clave = código del canal  |  Valor = Map<username, { username, idioma }>
-// Usamos un Map interno (y no un Set) para guardar el idioma de cada usuario.
+// Para saber quiénes están conectados en cada salón y qué idioma hablan
 const canalMiembros = new Map();
 
-// ── Función: generador de código único ────────────────────────────────────────
-// Formato XXX-XXXX, solo letras y números que no se confunden visualmente.
+// ── Cosas para que el chat no se trabe y ahorre recursos ─────────────────────
+
+// Esto es para que no manden 100 mensajes por segundo (limita el spam)
+const rateLimitMap = new Map();
+
+// Esto guarda traducciones que ya hicimos, así no le pedimos lo mismo a la IA mil veces
+const translationCache = new Map();
+
+// Esta función es la que llama a la inteligencia artificial (LLaMA) para traducir
+async function translateText(texto, fromLang, targetLang, retries = 2) {
+  if (fromLang === targetLang) return texto; // No hacer gastos inútiles, es el mismo idioma
+
+  const cacheKey = `${texto}:${fromLang}:${targetLang}`;
+  
+  if (translationCache.has(cacheKey)) {
+    return translationCache.get(cacheKey);
+  }
+
+  // Lógica de Reintentos fácil (retry with backoff 500ms, 1500ms)
+  for (let inte = 0; inte <= retries; inte++) {
+    try {
+      const response = await groq.chat.completions.create({
+        messages: [
+          { role: 'system', content: `You are a helpful translation assistant. Translate accurately from '${fromLang}' to '${targetLang}'. Respond ONLY in JSON format like {"text":"<your_translation>"}.` },
+          { role: 'user', content: texto }
+        ],
+        model: 'llama-3.3-70b-versatile',
+        response_format: { type: "json_object" },
+      });
+
+      const parseado = JSON.parse(response.choices[0].message.content);
+      const outputTraducida = parseado.text || parseado.translation || texto;
+
+      // Guardado LRU en caché 
+      translationCache.set(cacheKey, outputTraducida);
+      if (translationCache.size > 500) {
+        // En Maps, .keys().next() devuelve la llave más antigua añadida! Así se vacía fácil.
+        const primerKey = translationCache.keys().next().value;
+        translationCache.delete(primerKey);
+      }
+
+      return outputTraducida;
+
+    } catch (err) {
+      if (inte === retries) throw err; // Ya valió barriga
+      const msEsperar = inte === 0 ? 500 : 1500;
+      await new Promise(r => setTimeout(r, msEsperar));
+    }
+  }
+}
+
+// Esta función le avisa a todos en el salón que hay un mensaje nuevo y lo traduce para cada uno
+async function broadcastTranslation(io, codigoCanal, mensajeOriginal, esEdicion = false) {
+  const { idMensaje, username, idioma: origenLang, texto, timestamp } = mensajeOriginal;
+  const canalMap = canalMiembros.get(codigoCanal);
+
+  if (!canalMap) return;
+
+  // Miramos qué idiomas hablan los que están conectados para no traducir de más
+  const targetLangs = new Set([...canalMap.values()].map(u => u.idioma));
+  const translations = {}; 
+
+  // Lanzamos todas las traducciones al mismo tiempo para que sea rápido
+  const promesas = [...targetLangs].map(async (tl) => {
+    try {
+      const tradu = await translateText(texto, origenLang, tl);
+      translations[tl] = { text: tradu };
+    } catch (er) {
+      console.log(`Error traduciendo para ${tl}:`, er.message);
+      translations[tl] = { text: texto }; // Si falla la IA, mandamos el texto original para no dejar vacío
+    }
+  });
+
+  await Promise.all(promesas);
+
+  // Mandamos el mensaje ya con sus traducciones a todo el salón
+  io.to(codigoCanal).emit(esEdicion ? 'message-edited' : 'translated-message', {
+    idMensaje,
+    username,
+    originalText: texto,
+    originalLang: origenLang,
+    translations, 
+    timestamp,
+    tipo: 'mensaje-traducido',
+    editado: esEdicion // Para poner el aviso de "(editado)" en la pantalla
+  });
+}
+
+// ── Función para inventar un código de salón único (ej: ABC-1234) ─────────────
 function generarCodigo() {
   const chars = 'ABCDEFGHIJKLMNPQRSTUVWXYZ123456789';
   const porcion = (n) =>
@@ -55,42 +148,54 @@ function generarCodigo() {
   return codigo;
 }
 
-// ── Función: emitir estadísticas globales ─────────────────────────────────────
-// Envía a todos los clientes el número total de canales abiertos.
+// ── Le avisamos a todos cuántos canales hay abiertos ──────────────────────────
 function emitirEstadisticas() {
-  io.emit('stats-update', { totalCanales: canales.size });
+  const listaCanales = Array.from(canales.values()).map(c => ({
+    codigo: c.codigo,
+    nombre: c.nombre,
+    creador: c.creador,
+    idioma: c.idioma
+  }));
+  io.emit('stats-update', { totalCanales: canales.size, listaCanales });
 }
 
-// ── Función: emitir lista de miembros de un canal ─────────────────────────────
-// Notifica a todos en el canal cuántos están conectados y su idioma (para banderas).
+// ── Función para avisar quién está conectado en un salón específico ─────────
 function emitirMiembros(codigoCanal) {
   const membersMap = canalMiembros.get(codigoCanal);
   if (!membersMap) return;
 
-  // Convertimos el Map interno a Array de objetos { username, idioma }
-  const miembrosArray   = Array.from(membersMap.values());
+  // Quitamos duplicados por si alguien abrió dos pestañas con el mismo nombre
+  const uniqueMap = new Map();
+  for (const m of membersMap.values()) uniqueMap.set(m.username, m);
+
+  const miembrosArray   = Array.from(uniqueMap.values());
   const totalConectados = miembrosArray.length;
 
   io.to(codigoCanal).emit('canal-miembros-update', {
-    miembros: miembrosArray,   // [{ username, idioma }, ...]
+    miembros: miembrosArray,   // Mandamos la lista de gente
     totalConectados,
   });
 }
 
-// ── Lógica principal de Socket.io ────────────────────────────────────────────
+// ── ¡Aquí empieza lo bueno! Cuando alguien se conecta al servidor ────────────
 io.on('connection', (socket) => {
-  console.log(`🔌 Cliente conectado: ${socket.id}`);
+  console.log(`🔌 Alguien se conectó: ${socket.id}`);
 
-  // Al conectarse, enviamos inmediatamente las estadísticas actuales
-  socket.emit('stats-update', { totalCanales: canales.size });
+  // Función para mandar la lista de canales rápido
+  const enviarStatsInit = (sock) => {
+    const listaCanales = Array.from(canales.values()).map(c => ({
+      codigo: c.codigo, nombre: c.nombre, creador: c.creador, idioma: c.idioma
+    }));
+    sock.emit('stats-update', { totalCanales: canales.size, listaCanales });
+  };
 
-  // El cliente puede pedir las estadísticas en cualquier momento
-  socket.on('get-stats', () => {
-    socket.emit('stats-update', { totalCanales: canales.size });
-  });
+  // Apenas entra, le decimos qué canales hay abiertos
+  enviarStatsInit(socket);
 
-  // ── Evento: crear-canal (HU-04) ────────────────────────────────────────────
-  // El cliente envía: { nombre, idioma, creador }
+  // Si el cliente pregunta, le volvemos a decir las estadísticas
+  socket.on('get-stats', () => enviarStatsInit(socket));
+
+  // ── Cuando alguien quiere CREAR un salón nuevo ─────────────────────────────
   socket.on('create-channel', ({ nombre, idioma, creador }) => {
     if (!nombre || !idioma || !creador) {
       socket.emit('create-channel-response', {
@@ -100,12 +205,11 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Límite del plan gratuito: máximo 2 canales por usuario
-    const canalesDelUsuario = [...canales.values()].filter(c => c.creador === creador);
-    if (canalesDelUsuario.length >= 2) {
+    // Límite MVP: máximo 2 canales globales en todo el servidor
+    if (canales.size >= 2) {
       socket.emit('create-channel-response', {
         exito: false,
-        error: 'Límite alcanzado: el plan gratuito permite crear solo 2 canales.',
+        error: 'Límite global alcanzado: el MVP solo permite 2 canales activos en total. Cierra uno para crear otro.',
       });
       return;
     }
@@ -117,45 +221,59 @@ io.on('connection', (socket) => {
     console.log(`📺 Canal creado: "${nombre}" [${codigo}] por ${creador}`);
 
     socket.emit('create-channel-response', { exito: true, canal: nuevoCanal });
-    emitirEstadisticas(); // avisar a todos que hay un canal nuevo
+    emitirEstadisticas(); // Avisamos a todo el mundo que hay un nuevo salón
   });
 
-  // ── Evento: unirse-a-canal (HU-05) ────────────────────────────────────────
-  // El cliente envía: { codigo, username, idioma }
-  // El campo "idioma" es el idioma preferido del usuario (para mostrar su bandera).
+  // ── Cuando alguien (el creador) decide BORRAR el salón ─────────────────────
+  socket.on('delete-channel', (codigo) => {
+    const canalObj = canales.get(codigo);
+    if (!canalObj) return;
+
+    // Patada a todos los que estaban adentro, se cierra el boliche
+    io.to(codigo).emit('channel-deleted-notify');
+    
+    // Lo borramos de la memoria del servidor
+    canales.delete(codigo);
+    canalMiembros.delete(codigo);
+
+    // Actualizamos la lista para los que están en el Lobby
+    emitirEstadisticas();
+  });
+
+  // ── Cuando alguien se quiere UNIR a un salón usando el código ──────────────
   socket.on('join-channel-by-code', ({ codigo, username, idioma }) => {
     const canal = canales.get(codigo);
 
     if (!canal) {
       socket.emit('join-channel-response', {
         exito: false,
-        error: 'El código de invitación no es válido o el canal no existe.',
+        error: 'Ese código no existe, fíjate si lo escribiste bien.',
       });
       return;
     }
 
-    // Unir el socket a la room de Socket.io del canal
+    // Lo metemos a la "sala" de Socket.io
     socket.join(codigo);
 
-    // Guardar la relación socket ↔ canal+usuario+idioma (para la desconexión)
+    // Guardamos los datos del usuario para saber quién es cuando se desconecte
     socketCanal.set(socket.id, { codigoCanal: codigo, username, idioma });
 
-    // Agregar al usuario al mapa de miembros del canal (con su idioma)
+    // Lo anotamos en la lista de gente que está en el salón
     if (!canalMiembros.has(codigo)) {
       canalMiembros.set(codigo, new Map());
     }
-    canalMiembros.get(codigo).set(username, { username, idioma: idioma || 'en' });
+    canalMiembros.get(codigo).set(socket.id, { username, idioma: idioma || 'en' });
 
-    console.log(`👤 ${username} [${idioma}] se unió al canal "${canal.nombre}" [${codigo}]`);
+    console.log(`👤 ${username} [${idioma}] entró al salón "${canal.nombre}"`);
 
-    // Responder al nuevo miembro con la info del canal y el historial previo
+    // Le mandamos al usuario toda la info del salón y los mensajes viejos para que se ponga al día
     socket.emit('join-channel-response', {
       exito:    true,
       canal,
       historial: canal.historial,
     });
 
-    // Notificar a los demás que alguien nuevo entró
+    // Le avisamos a los demás que llegó alguien nuevo
     socket.to(codigo).emit('user-joined-notify', {
       username,
       idioma:    idioma || 'en',
@@ -163,53 +281,165 @@ io.on('connection', (socket) => {
       timestamp: new Date().toISOString(),
     });
 
-    // Actualizar la lista de miembros para todos los que están en el canal
+    // Refrescamos la lista de gente para todos
     emitirMiembros(codigo);
   });
 
-  // ── Evento: enviar-mensaje ─────────────────────────────────────────────────
-  // El cliente envía: { codigo, username, texto, idioma }
-  // Guardamos el idioma en el mensaje para que los demás puedan mostrar la bandera.
-  socket.on('send-message', ({ codigo, username, texto, idioma }) => {
+  // ── Cuando alguien manda un mensaje de texto ───────────────────────────────
+  socket.on('send-message', async ({ codigo, username, texto, idioma }) => {
     const canal = canales.get(codigo);
     if (!canal) return;
 
-    const mensajeNuevo = {
+    // Ponemos un límite de 1 mensaje por segundo para que no se vuelvan locos mandando spam
+    const ultimaVez = rateLimitMap.get(username) || 0;
+    const ahora = Date.now();
+    if (ahora - ultimaVez < 1000) return; 
+    rateLimitMap.set(username, ahora);
+
+    const inicioTimerMs = Date.now(); 
+    const idMsgRandom = Math.random().toString(36).substring(7);
+
+    // Le decimos a todos que estamos "procesando" (traduciendo) el mensaje
+    io.to(codigo).emit('processing', { username, typing: false });
+
+    // Armamos el objeto del mensaje
+    const mensajeOriginal = {
+      idMensaje: idMsgRandom,
       username,
-      idioma:    idioma || 'en',
+      idioma: idioma || 'en',
       texto,
       timestamp: new Date().toISOString(),
     };
 
-    // Guardamos en historial (máx. 50 mensajes para no saturar la memoria)
-    canal.historial.push(mensajeNuevo);
-    if (canal.historial.length > 50) canal.historial.shift();
+    // Mandamos a traducir a todos los idiomas y emitimos
+    await broadcastTranslation(io, codigo, mensajeOriginal);
 
-    // Retransmitir a todos en el canal, incluyendo al emisor
-    io.to(codigo).emit('new-message', mensajeNuevo);
+    // Avisamos que ya terminamos de traducir
+    io.to(codigo).emit('processing-done', { idMensaje: idMsgRandom, username });
+
+    console.log(`⏱ Traducido y enviado en ${Date.now() - inicioTimerMs}ms`);
+
+    // Guardamos el mensaje en la memoria para que los nuevos lo vean
+    canal.historial.push(mensajeOriginal);
+    if (canal.historial.length > 50) canal.historial.shift(); // Borramos los muy viejos para que no explote la RAM
   });
 
-  // ── Evento: desconexión ────────────────────────────────────────────────────
+  // ── Evento: edit-message ───────────────────────────────────────────────────
+  socket.on('edit-message', async ({ codigo, idMensaje, username, newText, idioma }) => {
+    const canal = canales.get(codigo);
+    if (!canal) return;
+
+    // Buscar si existe el mensaje y validamos al autor 
+    const isEditing = canal.historial.find(m => m.idMensaje === idMensaje);
+    if (!isEditing || isEditing.username !== username) return; // Prevent hacking
+
+    // Emitir procesamiento para este request específico
+    io.to(codigo).emit('processing', { username, typing: false });
+
+    // Modificamos el histórico
+    isEditing.texto = newText;
+    
+    // Y re-corremos broadcast pero en modo edición
+    await broadcastTranslation(io, codigo, isEditing, true);
+
+    io.to(codigo).emit('processing-done', { idMensaje, username });
+    console.log(`✏️ Edit completed for msg ${idMensaje}`);
+  });
+
+  // ── Evento: typing ──────────────────────────────────────────────────
+  socket.on('typing', ({ codigo, username, isTyping }) => {
+    socket.to(codigo).emit('user-typing', { username, isTyping });
+  });
+
+  // ── Cuando alguien nos manda un audio de voz ──────────────────────────────
+  socket.on('voice-audio', async ({ codigo, username, idioma, audioBuffer }) => {
+    const canal = canales.get(codigo);
+    if (!canal) return;
+
+    // También limitamos los audios para que no colapse el servidor
+    const ultima = rateLimitMap.get(username) || 0;
+    const rightNow = Date.now();
+    if (rightNow - ultima < 1000) return;
+    rateLimitMap.set(username, rightNow);
+
+    const idVoiceMsg = Math.random().toString(36).substring(7);
+    const startMs = Date.now();
+
+    // Avisamos que estamos procesando el audio (esto tarda un poquito más)
+    io.to(codigo).emit('processing', { username, isAudio: true });
+
+    try {
+      // Truco: Guardamos el audio en una carpeta temporal para que Whisper lo pueda leer
+      const archivoTmpPath = path.join(os.tmpdir(), `audio_voz_br_${idVoiceMsg}.webm`);
+      fs.writeFileSync(archivoTmpPath, Buffer.from(audioBuffer));
+
+      let textoHablado = "(🎙️ ...)";
+      try {
+        // Le pedimos a Whisper que nos diga qué dice el audio
+        const trnscript = await groq.audio.transcriptions.create({
+          file: fs.createReadStream(archivoTmpPath),
+          model: "whisper-large-v3-turbo",
+        });
+        if (!trnscript.text || trnscript.text.trim() === '') throw new Error('Audio vacío');
+        textoHablado = trnscript.text;
+      } catch (err) {
+        console.error(`Error procesando voz: ${err.message}`);
+        textoHablado = "⚠️ (No se pudo entender el audio, revisa si tienes crédito en Groq)";
+      } finally {
+        // Borramos el archivo temporal para no llenar el disco de basura
+        if (fs.existsSync(archivoTmpPath)) fs.unlinkSync(archivoTmpPath);
+      }
+
+      const mensajeOriginalObj = {
+        idMensaje: idVoiceMsg,
+        username,
+        idioma: idioma || 'en',
+        texto: textoHablado,
+        timestamp: new Date().toISOString(),
+      };
+
+      // Mandamos el texto ya convertido a todos los idiomas
+      await broadcastTranslation(io, codigo, mensajeOriginalObj);
+      
+      canal.historial.push(mensajeOriginalObj);
+      if (canal.historial.length > 50) canal.historial.shift();
+
+      console.log(`⏱ Voz procesada en ${Date.now() - startMs}ms`);
+
+    } catch (e) {
+      console.error(`Error fatal de audio: ${e.message}`);
+    } finally {
+      // Le decimos a la app que el usuario ya no está ocupado procesando
+      io.to(codigo).emit('processing-done', { idMensaje: idVoiceMsg, username });
+    }
+  });
+
+  // ── Cuando alguien se va o cierra la pestaña ──────────────────────────────
   socket.on('disconnect', () => {
-    console.log(`❌ Cliente desconectado: ${socket.id}`);
+    console.log(`❌ Alguien se fue: ${socket.id}`);
 
     const info = socketCanal.get(socket.id);
     if (info) {
       const { codigoCanal, username } = info;
 
-      // Quitar al usuario del Map de miembros del canal
+      // Quitamos a la persona de la lista del salón
       const membersMap = canalMiembros.get(codigoCanal);
       if (membersMap) {
-        membersMap.delete(username);
+        membersMap.delete(socket.id);
         if (membersMap.size === 0) canalMiembros.delete(codigoCanal);
       }
 
-      // Notificar a los que quedan que esta persona se fue
-      socket.to(codigoCanal).emit('user-left-notify', {
-        username,
-        mensaje:   `${username} ha salido del canal.`,
-        timestamp: new Date().toISOString(),
-      });
+      // Verificamos si aún tiene otros sockets vivos
+      const aunConectado = membersMap ? Array.from(membersMap.values()).some(m => m.username === username) : false;
+
+      if (!aunConectado) {
+        // Notificar a los que quedan que esta persona se fue
+        socket.to(codigoCanal).emit('user-left-notify', {
+          username,
+          mensaje:   `${username} ha salido del canal.`,
+          timestamp: new Date().toISOString(),
+        });
+      }
 
       // Actualizar la lista de miembros para los que permanecen
       emitirMiembros(codigoCanal);

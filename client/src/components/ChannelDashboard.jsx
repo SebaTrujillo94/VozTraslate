@@ -1,9 +1,7 @@
-// ──────────────────────────────────────────────────────────────────────────────
-// ChannelDashboard.jsx — Pantalla principal después del login (Épica 02)
-//
-// Muestra cuántos canales están abiertos en el servidor (en tiempo real)
-// y permite crear un canal nuevo o unirse a uno existente.
-// ──────────────────────────────────────────────────────────────────────────────
+// ********************************************************************************
+// ChannelDashboard.jsx — Esta es la pantalla principal que ves al entrar
+// Aquí puedes ver los canales, crearlos o unirte a uno que ya exista.
+// ********************************************************************************
 
 import { useState, useEffect } from 'react';
 import CreateChannelModal from './CreateChannelModal';
@@ -12,27 +10,28 @@ import { socket }         from '../services/socket';
 import './ChannelDashboard.css';
 
 export default function ChannelDashboard({ profile, onCerrarSesion }) {
-  // Controla qué vista se muestra: 'home' | 'crear' | 'unirse'
+  // Aquí guardamos en qué pantalla estamos: 'home', 'crear' o 'unirse'
   const [vista, setVista] = useState('home');
 
-  // Número total de canales activos en el servidor
+  // Aquí guardamos cuántos canales hay y la lista completa que nos manda el servidor
   const [totalCanales, setTotalCanales] = useState(0);
+  const [listaCanales, setListaCanales] = useState([]);
+  const [codigoUnirse, setCodigoUnirse] = useState(null);
 
-  // ── Obtener estadísticas al montar y escuchar actualizaciones ─────────────
+  // ── Esto corre apenas abres la página para conectarse al servidor ───────────
   useEffect(() => {
-    // Al conectarse, el servidor ya envía 'stats-update' automáticamente.
-    // Por si acaso lo pedimos explícitamente también.
     if (!socket.connected) socket.connect();
-    socket.emit('get-stats');
+    socket.emit('get-stats'); // Le pedimos al servidor que nos diga qué hay de nuevo
 
-    // Cuando el servidor avisa que el total de canales cambió, actualizamos
-    const manejarStats = ({ totalCanales }) => {
+    // Cuando el servidor nos responde con la lista de canales, la guardamos aquí
+    const manejarStats = ({ totalCanales, listaCanales = [] }) => {
       setTotalCanales(totalCanales);
+      setListaCanales(listaCanales);
     };
 
     socket.on('stats-update', manejarStats);
 
-    // Cleanup al desmontar
+    // Si cerramos esta pantalla, dejamos de escuchar para no gastar memoria
     return () => {
       socket.off('stats-update', manejarStats);
     };
@@ -46,7 +45,11 @@ export default function ChannelDashboard({ profile, onCerrarSesion }) {
       <div className="dashboard-wrapper">
         <JoinChannelView
           profile={profile}
-          onVolver={() => setVista('home')}
+          codigoAutoJoin={codigoUnirse}
+          onVolver={() => {
+            setCodigoUnirse(null);
+            setVista('home');
+          }}
         />
       </div>
     );
@@ -73,6 +76,42 @@ export default function ChannelDashboard({ profile, onCerrarSesion }) {
           </span>
         </div>
       </div>
+
+      {/* Sección Lista de Canales MVP */}
+      {listaCanales.length > 0 && (
+        <div className="active-channels-section">
+          <h3 className="section-title">Canales Públicos ({listaCanales.length}/2)</h3>
+          <div className="channels-grid">
+            {listaCanales.map(ct => (
+              <div key={ct.codigo} className="channel-box" onClick={() => {
+                setCodigoUnirse(ct.codigo);
+                setVista('unirse');
+              }}>
+                <div className="channel-box-header">
+                  <span className="channel-box-lang" title="Idioma Base">{ct.idioma.toUpperCase()}</span>
+                  <span className="channel-box-title">{ct.nombre}</span>
+                </div>
+                <div className="channel-box-body">
+                  <p>Código: <span className="channel-code-badge">{ct.codigo}</span></p>
+                  <p className="channel-creator-text">👤 {ct.creador}</p>
+                </div>
+                {ct.creador === profile.username && (
+                  <button 
+                    className="btn-delete-channel" 
+                    onClick={(e) => {
+                      e.stopPropagation(); // Evitar unirse al querer borrarlo
+                      socket.emit('delete-channel', ct.codigo);
+                    }}
+                    title="Borrar canal MVP"
+                  >
+                    🗑️
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Tarjetas de acción */}
       <div className="dashboard-cards">
@@ -111,7 +150,7 @@ export default function ChannelDashboard({ profile, onCerrarSesion }) {
         <span>Cerrar sesión</span>
       </button>
 
-      {/* Modal de creación (se superpone al dashboard) */}
+      {/* Modal para crear un canal (se pone encima de todo) */}
       {vista === 'crear' && (
         <CreateChannelModal
           profile={profile}

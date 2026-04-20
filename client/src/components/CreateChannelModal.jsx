@@ -1,5 +1,5 @@
 // ──────────────────────────────────────────────────────────────────────────────
-// CreateChannelModal.jsx — Modal para crear un nuevo canal privado (HU-04)
+// CreateChannelModal.jsx — Modal para crear un nuevo canal privado
 //
 // Este componente muestra un formulario donde el usuario ingresa el nombre del
 // canal y el idioma principal. Al enviarlo, le pide al servidor que lo cree
