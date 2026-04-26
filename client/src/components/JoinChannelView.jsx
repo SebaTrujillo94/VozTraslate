@@ -66,6 +66,7 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
   const [mensajeEditando, setMensajeEditando] = useState(null);
 
   const [showExitConfirm, setShowExitConfirm] = useState(false);
+  const [palabrasRestantes, setPalabrasRestantes] = useState(null); // null = pro o sin datos
 
   const goBack = useHistoryBack(onVolver);
 
@@ -89,15 +90,49 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
       const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const o = audioCtx.createOscillator();
       const g = audioCtx.createGain();
-      o.connect(g);
-      g.connect(audioCtx.destination);
+      o.connect(g); g.connect(audioCtx.destination);
       o.type = 'sine';
       o.frequency.setValueAtTime(800, audioCtx.currentTime);
       o.frequency.exponentialRampToValueAtTime(1200, audioCtx.currentTime + 0.1);
       g.gain.setValueAtTime(0.1, audioCtx.currentTime);
       g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
-      o.start();
-      o.stop(audioCtx.currentTime + 0.1);
+      o.start(); o.stop(audioCtx.currentTime + 0.1);
+    } catch(e) {}
+  };
+
+  // sonido cuando alguien entra al canal (tono ascendente)
+  const playJoinSound = () => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      [0, 0.12].forEach((delay, i) => {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.type = 'sine';
+        o.frequency.setValueAtTime(i === 0 ? 600 : 900, ctx.currentTime + delay);
+        g.gain.setValueAtTime(0.08, ctx.currentTime + delay);
+        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay + 0.15);
+        o.start(ctx.currentTime + delay);
+        o.stop(ctx.currentTime + delay + 0.15);
+      });
+    } catch(e) {}
+  };
+
+  // sonido cuando alguien sale del canal (tono descendente)
+  const playLeaveSound = () => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      [0, 0.12].forEach((delay, i) => {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.type = 'sine';
+        o.frequency.setValueAtTime(i === 0 ? 500 : 350, ctx.currentTime + delay);
+        g.gain.setValueAtTime(0.07, ctx.currentTime + delay);
+        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + delay + 0.18);
+        o.start(ctx.currentTime + delay);
+        o.stop(ctx.currentTime + delay + 0.18);
+      });
     } catch(e) {}
   };
 
@@ -176,19 +211,15 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
     };
 
     // Otro usuario se une: mostrar mensaje de sistema en el chat
-    const manejarNuevoMiembro = ({ username, mensaje, timestamp }) => {
-      setMensajes((prev) => [
-        ...prev,
-        { tipo: 'sistema', texto: mensaje, timestamp },
-      ]);
+    const manejarNuevoMiembro = ({ mensaje, timestamp }) => {
+      setMensajes((prev) => [...prev, { tipo: 'sistema', texto: mensaje, timestamp }]);
+      if (sonidoActivado) playJoinSound();
     };
 
     // Otro usuario se va: mostrar mensaje de sistema en el chat
-    const manejarSalidaMiembro = ({ username, mensaje, timestamp }) => {
-      setMensajes((prev) => [
-        ...prev,
-        { tipo: 'sistema', texto: mensaje, timestamp },
-      ]);
+    const manejarSalidaMiembro = ({ mensaje, timestamp }) => {
+      setMensajes((prev) => [...prev, { tipo: 'sistema', texto: mensaje, timestamp }]);
+      if (sonidoActivado) playLeaveSound();
     };
 
     // El servidor envía la lista actualizada de miembros (con idiomas)
@@ -232,6 +263,16 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
       onVolver();
     };
 
+    // actualizacion del contador de palabras (solo plan free)
+    const manejarWordsUpdate = ({ wordsUsed, limit }) => {
+      setPalabrasRestantes(limit - wordsUsed);
+    };
+
+    // limite alcanzado
+    const manejarWordLimitReached = () => {
+      setPalabrasRestantes(0);
+    };
+
     // Registrar todos los listeners nuevos
     socket.on('join-channel-response',  manejarUnirse);
     socket.on('user-joined-notify',     manejarNuevoMiembro);
@@ -243,6 +284,11 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
     socket.on('processing',             manejarProcessing);
     socket.on('processing-done',        manejarProcessingDone);
     socket.on('user-typing',            manejarTyping);
+    socket.on('words-update',           manejarWordsUpdate);
+    socket.on('word-limit-reached',     manejarWordLimitReached);
+
+    // pedimos el conteo de palabras actual al conectar
+    socket.emit('get-word-count', { username: profile.username });
 
     return () => {
       socket.off('join-channel-response',  manejarUnirse);
@@ -255,6 +301,8 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
       socket.off('processing',             manejarProcessing);
       socket.off('processing-done',        manejarProcessingDone);
       socket.off('user-typing',            manejarTyping);
+      socket.off('words-update',           manejarWordsUpdate);
+      socket.off('word-limit-reached',     manejarWordLimitReached);
     };
   }, [onVolver, profile.username, sonidoActivado]);
 
@@ -448,6 +496,12 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
               {sonidoActivado ? <Volume2 size={16} /> : <VolumeX size={16} />}
             </button>
 
+            {palabrasRestantes !== null && (
+              <div className={`words-badge ${palabrasRestantes <= 100 ? 'words-badge--low' : ''}`}>
+                <span>{palabrasRestantes}</span>
+                <span className="words-badge-label"> palabras</span>
+              </div>
+            )}
             <button className="btn-back" onClick={() => setShowExitConfirm(true)}><ArrowLeft size={15} /> Salir</button>
           </div>
         </div>
@@ -620,7 +674,8 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
           <button
             type="submit"
             className="btn-send"
-            disabled={!textoMensaje.trim() && !estaGrabando}
+            disabled={(!textoMensaje.trim() && !estaGrabando) || palabrasRestantes === 0}
+            title={palabrasRestantes === 0 ? 'Límite de palabras alcanzado' : ''}
           >
             {mensajeEditando ? 'Guardar' : <Send size={15} />}
           </button>

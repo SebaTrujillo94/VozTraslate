@@ -896,6 +896,36 @@
   margin-bottom: 2rem;
 }
 
+/* Badge contador de palabras (plan free) */
+.words-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.3rem 0.7rem;
+  background: rgba(124, 58, 237, 0.12);
+  border: 1px solid rgba(124, 58, 237, 0.3);
+  border-radius: var(--radius-full);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent-purple);
+  transition: all var(--transition-normal);
+}
+.words-badge--low {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.35);
+  color: var(--accent-red);
+  animation: pulse-badge 1.5s ease infinite;
+}
+.words-badge-label {
+  font-weight: 400;
+  opacity: 0.8;
+  font-size: 0.72rem;
+}
+@keyframes pulse-badge {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.6; }
+}
+
 .btn-back {
   padding: 0.5rem 0.9rem;
   background: var(--bg-glass);

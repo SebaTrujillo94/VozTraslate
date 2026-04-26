@@ -14,7 +14,7 @@ import dotenv from 'dotenv';
 import Groq from 'groq-sdk';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { pool, initDB } from './db.js';
+import { pool, initDB, loadChannels, saveChannel, deleteChannel, saveMessage, updateMessage, getChannelHistory } from './db.js';
 
 // Aquí cargamos nuestra llave secreta del archivo .env para que funcione la IA
 dotenv.config();
@@ -282,6 +282,27 @@ async function broadcastTranslation(io, codigoCanal, mensajeOriginal, esEdicion 
   });
 }
 
+// limite de palabras para usuarios free
+const WORD_LIMIT_FREE = 1000;
+
+// cuenta palabras de un texto
+function contarPalabras(texto) {
+  return texto.trim().split(/\s+/).filter(Boolean).length;
+}
+
+// descuenta palabras del usuario en la db y devuelve el estado actualizado
+async function descontarPalabras(username, cantidad) {
+  const { rows } = await pool.query(
+    'SELECT words_used, plan FROM users WHERE username = $1',
+    [username]
+  );
+  if (!rows[0] || rows[0].plan !== 'free') return null; // pro = sin limite
+  const wordsUsed = rows[0].words_used || 0;
+  const nuevasUsadas = Math.min(wordsUsed + cantidad, WORD_LIMIT_FREE);
+  await pool.query('UPDATE users SET words_used = $1 WHERE username = $2', [nuevasUsadas, username]);
+  return { wordsUsed: nuevasUsadas, limit: WORD_LIMIT_FREE };
+}
+
 // ── Función para inventar un código de salón único (ej: ABC-1234) ─────────────
 function generarCodigo() {
   const chars = 'ABCDEFGHIJKLMNPQRSTUVWXYZ123456789';
@@ -350,7 +371,7 @@ io.on('connection', (socket) => {
   socket.on('get-stats', () => enviarStatsInit(socket));
 
   // ── Cuando alguien quiere CREAR un salón nuevo ─────────────────────────────
-  socket.on('create-channel', ({ nombre, idioma, creador }) => {
+  socket.on('create-channel', async ({ nombre, idioma, creador }) => {
     if (!nombre || !idioma || !creador) {
       socket.emit('create-channel-response', {
         exito: false,
@@ -370,9 +391,10 @@ io.on('connection', (socket) => {
     }
 
     const codigo     = generarCodigo();
-    const nuevoCanal = { nombre, creador, idioma, codigo, tipo: 'private', historial: [] };
+    const nuevoCanal = { nombre, creador, idioma, codigo, tipo: 'private', permanente: false, historial: [] };
 
     canales.set(codigo, nuevoCanal);
+    await saveChannel({ codigo, nombre, creador, idioma, tipo: 'private', permanente: false });
     console.log(`📺 Canal creado: "${nombre}" [${codigo}] por ${creador}`);
 
     socket.emit('create-channel-response', { exito: true, canal: nuevoCanal });
@@ -380,23 +402,24 @@ io.on('connection', (socket) => {
   });
 
   // ── Cuando alguien (el creador) decide BORRAR el salón ─────────────────────
-  socket.on('delete-channel', (codigo) => {
+  socket.on('delete-channel', async (codigo) => {
     const canalObj = canales.get(codigo);
     if (!canalObj || canalObj.permanente) return;
 
     // Patada a todos los que estaban adentro, se cierra el boliche
     io.to(codigo).emit('channel-deleted-notify');
-    
-    // Lo borramos de la memoria del servidor
+
+    // Lo borramos de la memoria y de la db
     canales.delete(codigo);
     canalMiembros.delete(codigo);
+    await deleteChannel(codigo);
 
     // Actualizamos la lista para los que están en el Lobby
     emitirEstadisticas();
   });
 
   // ── Cuando alguien se quiere UNIR a un salón usando el código ──────────────
-  socket.on('join-channel-by-code', ({ codigo, username, idioma }) => {
+  socket.on('join-channel-by-code', async ({ codigo, username, idioma }) => {
     const canal = canales.get(codigo);
 
     if (!canal) {
@@ -421,11 +444,12 @@ io.on('connection', (socket) => {
 
     console.log(`👤 ${username} [${idioma}] entró al salón "${canal.nombre}"`);
 
-    // Le mandamos al usuario toda la info del salón y los mensajes viejos para que se ponga al día
+    // cargamos el historial desde la db para que vea los mensajes anteriores
+    const historial = await getChannelHistory(codigo);
     socket.emit('join-channel-response', {
-      exito:    true,
+      exito: true,
       canal,
-      historial: canal.historial,
+      historial,
     });
 
     // Le avisamos a los demás que llegó alguien nuevo
@@ -440,6 +464,13 @@ io.on('connection', (socket) => {
     emitirMiembros(codigo);
   });
 
+  // devuelve el conteo de palabras al cliente cuando entra al canal
+  socket.on('get-word-count', async ({ username }) => {
+    const { rows } = await pool.query('SELECT words_used, plan FROM users WHERE username = $1', [username]);
+    if (!rows[0] || rows[0].plan !== 'free') return;
+    socket.emit('words-update', { wordsUsed: rows[0].words_used || 0, limit: WORD_LIMIT_FREE });
+  });
+
   // ── Cuando alguien manda un mensaje de texto ───────────────────────────────
   socket.on('send-message', async ({ codigo, username, texto, idioma }) => {
     const canal = canales.get(codigo);
@@ -448,8 +479,18 @@ io.on('connection', (socket) => {
     // Ponemos un límite de 1 mensaje por segundo para que no se vuelvan locos mandando spam
     const ultimaVez = rateLimitMap.get(username) || 0;
     const ahora = Date.now();
-    if (ahora - ultimaVez < 1000) return; 
+    if (ahora - ultimaVez < 1000) return;
     rateLimitMap.set(username, ahora);
+
+    // verificamos si el usuario free tiene palabras disponibles
+    const { rows: userRows } = await pool.query('SELECT words_used, plan FROM users WHERE username = $1', [username]);
+    if (userRows[0]?.plan === 'free') {
+      const restantes = WORD_LIMIT_FREE - (userRows[0].words_used || 0);
+      if (restantes <= 0) {
+        socket.emit('word-limit-reached');
+        return;
+      }
+    }
 
     const inicioTimerMs = Date.now(); 
     const idMsgRandom = Math.random().toString(36).substring(7);
@@ -474,9 +515,21 @@ io.on('connection', (socket) => {
 
     console.log(`⏱ Traducido y enviado en ${Date.now() - inicioTimerMs}ms`);
 
-    // Guardamos el mensaje en la memoria para que los nuevos lo vean
-    canal.historial.push(mensajeOriginal);
-    if (canal.historial.length > 50) canal.historial.shift(); // Borramos los muy viejos para que no explote la RAM
+    // guardamos el mensaje en la db para persistencia
+    await saveMessage({
+      idMensaje:    mensajeOriginal.idMensaje,
+      canalCodigo:  codigo,
+      username,
+      idioma:       idioma || 'en',
+      texto,
+      originalText: mensajeOriginal.originalText || texto,
+      translations: mensajeOriginal.translations,
+    });
+
+    // descontamos palabras y avisamos al cliente el nuevo total
+    const wordCount = contarPalabras(texto);
+    const wordState = await descontarPalabras(username, wordCount);
+    if (wordState) socket.emit('words-update', wordState);
   });
 
   // ── Evento: edit-message ───────────────────────────────────────────────────
@@ -491,11 +544,15 @@ io.on('connection', (socket) => {
     // Emitir procesamiento para este request específico
     io.to(codigo).emit('processing', { username, typing: false });
 
-    // Modificamos el histórico
     isEditing.texto = newText;
-    
-    // Y re-corremos broadcast pero en modo edición
     await broadcastTranslation(io, codigo, isEditing, true);
+
+    // actualizamos el mensaje editado en la db
+    await updateMessage({
+      idMensaje,
+      texto:        newText,
+      translations: isEditing.translations,
+    });
 
     io.to(codigo).emit('processing-done', { idMensaje, username });
     console.log(`✏️ Edit completed for msg ${idMensaje}`);
@@ -555,9 +612,22 @@ io.on('connection', (socket) => {
 
       // Mandamos el texto ya convertido a todos los idiomas
       await broadcastTranslation(io, codigo, mensajeOriginalObj);
-      
-      canal.historial.push(mensajeOriginalObj);
-      if (canal.historial.length > 50) canal.historial.shift();
+
+      // guardamos el mensaje de voz en la db igual que los de texto
+      await saveMessage({
+        idMensaje:    idVoiceMsg,
+        canalCodigo:  codigo,
+        username,
+        idioma:       idioma || 'en',
+        texto:        textoHablado,
+        originalText: textoHablado,
+        translations: mensajeOriginalObj.translations,
+      });
+
+      // descontamos palabras del audio transcrito
+      const voiceWordCount = contarPalabras(textoHablado);
+      const voiceWordState = await descontarPalabras(username, voiceWordCount);
+      if (voiceWordState) socket.emit('words-update', voiceWordState);
 
       console.log(`⏱ Voz procesada en ${Date.now() - startMs}ms`);
 
@@ -607,10 +677,27 @@ io.on('connection', (socket) => {
 const PUERTO = 3001;
 
 // Arrancamos aunque falle la DB (Socket.io funciona igual)
-initDB().catch((e) => {
-  console.warn(`⚠️  PostgreSQL no disponible: ${e.message}`);
-  console.warn('   Auth REST endpoints deshabilitados. Configura DATABASE_URL en .env.');
-});
+initDB()
+  .then(async () => {
+    // cargamos los canales guardados en la db al mapa en memoria
+    const rows = await loadChannels();
+    for (const row of rows) {
+      canales.set(row.codigo, {
+        codigo:     row.codigo,
+        nombre:     row.nombre,
+        creador:    row.creador,
+        idioma:     row.idioma,
+        tipo:       row.tipo,
+        permanente: row.permanente,
+        historial:  [],
+      });
+    }
+    console.log(`📦 ${rows.length} canal(es) cargados desde la DB`);
+  })
+  .catch((e) => {
+    console.warn(`⚠️  PostgreSQL no disponible: ${e.message}`);
+    console.warn('   Configura DATABASE_URL en .env.');
+  });
 
 httpServer.listen(PUERTO, () => {
   console.log(`\n🚀 Servidor VozTranslate corriendo en el puerto ${PUERTO}`);
