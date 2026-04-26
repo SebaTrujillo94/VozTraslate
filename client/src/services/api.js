@@ -1,6 +1,8 @@
-// api service usando LocalStorage (Fake Backend)
+// api.js - funciones para hablar con el servidor
+// reemplazamos el localStorage por llamadas reales al backend con postgres
 
-// manejar el token ficticio en el localstorage
+const API_URL = 'http://localhost:3001';
+
 export function getToken() {
   return localStorage.getItem('voztranslate_token');
 }
@@ -13,118 +15,61 @@ export function clearToken() {
   localStorage.removeItem('voztranslate_token');
 }
 
-// helper para leer y guardar la "base de datos" del localstorage
-function getUsersDB() {
-  const data = localStorage.getItem('voztranslate_users_db');
-  return data ? JSON.parse(data) : [];
+async function request(path, options = {}) {
+  const token = getToken();
+  const headers = { 'Content-Type': 'application/json', ...options.headers };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const res  = await fetch(`${API_URL}${path}`, { ...options, headers });
+  const data = await res.json();
+
+  if (!res.ok) throw { status: res.status, message: data.error || 'Error desconocido' };
+  return data;
 }
 
-function saveUsersDB(users) {
-  localStorage.setItem('voztranslate_users_db', JSON.stringify(users));
-}
-
-// ── Auth API (Falsa, puramente en LocalStorage) ──────────────────────
-
-// registrar un usuario nuevo
 export async function register({ email, password, username, displayName, preferredLanguage }) {
-  return new Promise((resolve, reject) => {
-    setTimeout(() => {
-      const users = getUsersDB();
-      const lowerEmail = email.toLowerCase();
-      const lowerUsername = username.toLowerCase();
-
-      // chequear si existe
-      if (users.find(u => u.email === lowerEmail)) {
-        return reject({ status: 409, message: 'El correo ya está en uso' });
-      }
-      if (users.find(u => u.username === lowerUsername)) {
-        return reject({ status: 409, message: 'El nombre de usuario ya está en uso' });
-      }
-
-      // crear usuario
-      const newUser = {
-        id: 'usr_' + Date.now().toString(36),
-        email: lowerEmail,
-        password, // guardamos la clave cruda solo porque es de prueba escolar
-        username: lowerUsername,
-        displayName: displayName || username,
-        preferredLanguage: preferredLanguage || 'en',
-        avatarUrl: null
-      };
-
-      users.push(newUser);
-      saveUsersDB(users);
-
-      // simulamos un token JWT usando el mismo ID
-      setToken(newUser.id);
-
-      resolve({ token: newUser.id, user: newUser });
-    }, 400); // retraso artificial
+  const data = await request('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ email, password, username, displayName, preferredLanguage }),
   });
+  setToken(data.token);
+  return data;
 }
 
-// mandar correo y pass para loguear
 export async function login({ email, password }) {
-  return new Promise((resolve, reject) => {
-    setTimeout(() => {
-      const users = getUsersDB();
-      const user = users.find(u => u.email === email.toLowerCase());
-
-      if (!user || user.password !== password) {
-        return reject({ status: 401, message: 'Correo o contraseña incorrectos' });
-      }
-
-      setToken(user.id);
-
-      // no devolvemos la contraseña
-      const { password: _, ...userSafeInfo } = user;
-      resolve({ token: user.id, user: userSafeInfo });
-    }, 400);
+  const data = await request('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
   });
+  setToken(data.token);
+  return data;
 }
 
-// obtener mis datos desde el localstorage si tengo token
 export async function getMe() {
-  return new Promise((resolve, reject) => {
-    const token = getToken();
-    if (!token) return reject({ status: 401, message: 'No estás logueado' });
-
-    const users = getUsersDB();
-    const user = users.find(u => u.id === token);
-
-    if (!user) {
-      clearToken();
-      return reject({ status: 404, message: 'Usuario no encontrado' });
-    }
-
-    const { password: _, ...userSafeInfo } = user;
-    resolve({ user: userSafeInfo });
-  });
+  return request('/api/auth/me');
 }
 
-// cambiar la data de mi perfil
 export async function updateProfile({ displayName, preferredLanguage, avatarUrl }) {
-  return new Promise((resolve, reject) => {
-    const token = getToken();
-    if (!token) return reject({ status: 401, message: 'No estás logueado' });
-
-    const users = getUsersDB();
-    const index = users.findIndex(u => u.id === token);
-
-    if (index === -1) return reject({ status: 404, message: 'Usuario no encontrado' });
-
-    if (displayName !== undefined) users[index].displayName = displayName;
-    if (preferredLanguage !== undefined) users[index].preferredLanguage = preferredLanguage;
-    if (avatarUrl !== undefined) users[index].avatarUrl = avatarUrl;
-
-    saveUsersDB(users);
-
-    const { password: _, ...userSafeInfo } = users[index];
-    resolve({ message: 'Perfil actualizado', user: userSafeInfo });
+  return request('/api/auth/profile', {
+    method: 'PUT',
+    body: JSON.stringify({ displayName, preferredLanguage, avatarUrl }),
   });
 }
 
-// salir de la cuenta y borrar token
+export async function checkEmail(email) {
+  return request('/api/auth/check-email', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+}
+
+export async function resetPassword({ email, newPassword }) {
+  return request('/api/auth/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ email, newPassword }),
+  });
+}
+
 export function logout() {
   clearToken();
 }

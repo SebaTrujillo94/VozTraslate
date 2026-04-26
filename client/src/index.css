@@ -3,20 +3,20 @@
 
 /* ── DARK THEME (default) ─────────────────────────────────────────── */
 :root, [data-theme="dark"] {
-  --bg-primary: #06070d;
-  --bg-secondary: #0d0f1a;
-  --bg-card: rgba(255, 255, 255, 0.04);
-  --bg-card-solid: #121425;
-  --bg-card-hover: rgba(255, 255, 255, 0.07);
-  --bg-glass: rgba(255, 255, 255, 0.06);
-  --bg-lighter: #1a1c2e;
+  --bg-primary: #0e1017;
+  --bg-secondary: #141726;
+  --bg-card: rgba(255, 255, 255, 0.05);
+  --bg-card-solid: #191c2d;
+  --bg-card-hover: rgba(255, 255, 255, 0.09);
+  --bg-glass: rgba(255, 255, 255, 0.07);
+  --bg-lighter: #20233a;
   --border-glass: rgba(255, 255, 255, 0.08);
   --border-color: rgba(255, 255, 255, 0.08);
   --border-active: rgba(124, 58, 237, 0.5);
 
-  --text-primary: #f0f0f5;
-  --text-secondary: #8b8ca0;
-  --text-muted: #565770;
+  --text-primary: #eeeef3;
+  --text-secondary: #9fa1b8;
+  --text-muted: #72748e;
 
   --accent-purple: #7c3aed;
   --accent-blue: #3b82f6;
@@ -56,18 +56,18 @@
 [data-theme="light"] {
   --bg-primary: #f4f6fb;
   --bg-secondary: #ffffff;
-  --bg-card: rgba(255, 255, 255, 0.85);
+  --bg-card: rgba(255, 255, 255, 0.95);
   --bg-card-solid: #ffffff;
-  --bg-card-hover: rgba(0, 0, 0, 0.03);
-  --bg-glass: rgba(255, 255, 255, 0.7);
-  --bg-lighter: #e8ecf4;
-  --border-glass: rgba(0, 0, 0, 0.08);
-  --border-color: rgba(0, 0, 0, 0.1);
+  --bg-card-hover: rgba(0, 0, 0, 0.04);
+  --bg-glass: rgba(255, 255, 255, 0.88);
+  --bg-lighter: #e2e7f0;
+  --border-glass: rgba(0, 0, 0, 0.1);
+  --border-color: rgba(0, 0, 0, 0.12);
   --border-active: rgba(124, 58, 237, 0.4);
 
-  --text-primary: #111827;
-  --text-secondary: #4b5563;
-  --text-muted: #9ca3af;
+  --text-primary: #0f172a;
+  --text-secondary: #374151;
+  --text-muted: #6b7280;
 
   --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.08);
   --shadow-glow: 0 0 40px rgba(124, 58, 237, 0.08);
@@ -153,3 +153,16 @@ body {
 
 .animate-fade-in { animation: fadeIn 0.5s ease forwards; }
 .animate-slide-up { animation: slideUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+
+/* ── Responsive base ──────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  html { font-size: 15px; }
+  body { overflow-y: auto; }
+}
+@media (max-width: 480px) {
+  html { font-size: 14px; }
+  :root {
+    --radius-xl: 18px;
+    --radius-lg: 12px;
+  }
+}

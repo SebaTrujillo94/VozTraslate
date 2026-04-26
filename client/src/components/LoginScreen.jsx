@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
+import { Eye, EyeOff, Zap, Crown, Lock, AlertTriangle, ArrowLeft, KeyRound, CheckCircle2 } from 'lucide-react';
 import { TRANSLATIONS, getTranslation } from '../utils/i18n';
-import { register, login } from '../services/api';
+import { register, login, checkEmail, resetPassword } from '../services/api';
 import './LoginScreen.css';
 
 const LANGUAGES = [
@@ -43,6 +44,7 @@ export default function LoginScreen({ onLogin }) {
   // tiempo de baneo de login
 
   const [lockoutMinutes, setLockoutMinutes] = useState(0);
+  const [resetDone, setResetDone] = useState(false);
 
   // ir cambiando las frases cada cierto tiempo
   const [quote, setQuote] = useState({ q: 'Los límites de mi lenguaje son los límites de mi mundo.', a: 'Ludwig Wittgenstein' });
@@ -73,6 +75,25 @@ export default function LoginScreen({ onLogin }) {
     return () => clearInterval(interval);
   }, [lockoutMinutes]);
 
+  // Browser back en paso 2 (registro o recuperación) → vuelve al paso 1
+  useEffect(() => {
+    const isStep2 = (mode === 'register' || mode === 'forgot') && step === 2;
+    if (!isStep2) return;
+    window.history.pushState({ _nav: 'step2' }, '');
+    const handler = () => setStep(1);
+    window.addEventListener('popstate', handler);
+    return () => window.removeEventListener('popstate', handler);
+  }, [step, mode]);
+
+  // Browser back en paso 1 del forgot → vuelve al login
+  useEffect(() => {
+    if (mode !== 'forgot' || step !== 1) return;
+    window.history.pushState({ _nav: 'forgot' }, '');
+    const handler = () => switchMode('login');
+    window.addEventListener('popstate', handler);
+    return () => window.removeEventListener('popstate', handler);
+  }, [mode, step]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const t = (key) => getTranslation(language, key);
 
   const handleAvatarUpload = (e) => {
@@ -93,6 +114,7 @@ export default function LoginScreen({ onLogin }) {
     setPassword('');
     setConfirmPassword('');
     setUsername('');
+    setResetDone(false);
   };
 
   // funcion para entrar a la cuenta
@@ -197,6 +219,40 @@ export default function LoginScreen({ onLogin }) {
     }
   };
 
+  // paso 1 de recuperar contraseña: verificar que el correo exista
+  const handleForgotStep1 = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      await checkEmail(email.trim());
+      setStep(2);
+    } catch (err) {
+      setError(err.message || 'Correo no encontrado');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // paso 2: guardar nueva contraseña
+  const handleForgotStep2 = async (e) => {
+    e.preventDefault();
+    setError('');
+    if (password !== confirmPassword) { setError('Las contraseñas no coinciden'); return; }
+    if (password.length < 8)          { setError('Mínimo 8 caracteres'); return; }
+    if (!/[A-Z]/.test(password))      { setError('Debe tener al menos una mayúscula'); return; }
+    if (!/[0-9]/.test(password))      { setError('Debe tener al menos un número'); return; }
+    setLoading(true);
+    try {
+      await resetPassword({ email: email.trim(), newPassword: password });
+      setResetDone(true);
+    } catch (err) {
+      setError(err.message || 'Error al restablecer');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const currentLang = LANGUAGES.find(l => l.code === language) || LANGUAGES[0];
 
   return (
@@ -221,8 +277,8 @@ export default function LoginScreen({ onLogin }) {
           <p className="login-subtitle">Traducción de voz en tiempo real</p>
         </div>
 
-        {/* Mode Tabs */}
-        <div className="auth-tabs">
+        {/* Mode Tabs — ocultos en flujo de recuperación */}
+        <div className={`auth-tabs ${mode === 'forgot' ? 'hidden-tabs' : ''}`}>
           <button
             type="button"
             className={`auth-tab ${mode === 'login' ? 'active' : ''}`}
@@ -239,8 +295,8 @@ export default function LoginScreen({ onLogin }) {
           </button>
         </div>
 
-        {/* Step indicator (register only) */}
-        {mode === 'register' && (
+        {/* Step indicator (register + forgot) */}
+        {(mode === 'register' || mode === 'forgot') && (
           <div className="login-steps">
             <div className={`step-dot ${step >= 1 ? 'active' : ''}`} />
             <div className="step-line" />
@@ -251,7 +307,7 @@ export default function LoginScreen({ onLogin }) {
         {/* Error message */}
         {error && (
           <div className="auth-error">
-            <span className="auth-error-icon">⚠️</span>
+            <AlertTriangle size={14} className="auth-error-icon" />
             <span>{error}</span>
           </div>
         )}
@@ -259,7 +315,7 @@ export default function LoginScreen({ onLogin }) {
         {/* Lockout warning */}
         {lockoutMinutes > 0 && (
           <div className="auth-lockout">
-            🔒 Cuenta bloqueada por {lockoutMinutes} minuto{lockoutMinutes !== 1 ? 's' : ''}
+            <Lock size={14} /> Cuenta bloqueada por {lockoutMinutes} minuto{lockoutMinutes !== 1 ? 's' : ''}
           </div>
         )}
 
@@ -299,10 +355,17 @@ export default function LoginScreen({ onLogin }) {
                   onClick={() => setShowPassword(!showPassword)}
                   tabIndex={-1}
                 >
-                  {showPassword ? '🙈' : '👁️'}
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
             </div>
+            <button
+              type="button"
+              className="forgot-link"
+              onClick={() => { setEmail(''); switchMode('forgot'); }}
+            >
+              ¿Olvidaste tu contraseña?
+            </button>
             <button
               id="login-submit"
               type="submit"
@@ -366,7 +429,7 @@ export default function LoginScreen({ onLogin }) {
                   onClick={() => setShowPassword(!showPassword)}
                   tabIndex={-1}
                 >
-                  {showPassword ? '🙈' : '👁️'}
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
               {/* mostrar si cumple con las letras y numeros de la clave */}
@@ -405,73 +468,220 @@ export default function LoginScreen({ onLogin }) {
         {/* form paso 2 configurando el perfil */}
         {mode === 'register' && step === 2 && (
           <form onSubmit={handleRegisterComplete} className="login-form step-anim" id="register-profile-form">
+
+            {/* Idioma: grid directo sin acordeón */}
             <div className="login-field">
               <label className="login-label">Idioma Principal</label>
-              <div className="form-group" style={{ margin: 0, width: '100%' }}>
-                <button type="button" className="lang-accordion-toggle" style={{ margin: 0 }} onClick={() => setLangOpen(!langOpen)}>
-                  <div className="lang-accordion-right" style={{ marginLeft: 0 }}>
-                    <span className="lang-preview-chip">{currentLang.flag} {currentLang.label}</span>
-                    <span className={`accordion-arrow ${langOpen ? 'open' : ''}`}>▾</span>
+              <div className="reg-lang-grid">
+                {LANGUAGES.map((lang) => {
+                  const libre = lang.code === 'es' || lang.code === 'en';
+                  return (
+                    <button
+                      key={lang.code}
+                      type="button"
+                      className={`reg-lang-chip ${language === lang.code ? 'selected' : ''} ${!libre ? 'locked-lang' : ''}`}
+                      onClick={() => libre && setLanguage(lang.code)}
+                      title={!libre ? 'Disponible en Plan Pro' : lang.label}
+                      disabled={!libre}
+                    >
+                      <span className="reg-lang-flag">{lang.flag}</span>
+                      <span className="reg-lang-label">{lang.label}</span>
+                      {!libre && <span className="reg-lang-lock"><Lock size={10} /></span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Nombre + Avatar en una fila */}
+            <div className="login-field">
+              <label className="login-label" htmlFor="register-display-name">Nombre a Mostrar</label>
+              <div className="reg-name-row">
+                <input
+                  id="register-display-name"
+                  type="text"
+                  className="login-input"
+                  placeholder="Cómo te verán los demás"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  maxLength={50}
+                />
+                <div
+                  className="login-avatar reg-avatar-sm"
+                  onClick={() => fileRef.current?.click()}
+                  title="Subir foto de perfil"
+                >
+                  {avatarUrl
+                    ? <img src={avatarUrl} alt="avatar" className="login-avatar-img" />
+                    : <span className="reg-avatar-initial">
+                        {(displayName || username)?.[0]?.toUpperCase() || '＋'}
+                      </span>
+                  }
+                  <div className="login-avatar-overlay">
+                    {avatarUrl ? 'Cambiar' : 'Foto'}
                   </div>
-                </button>
-                <div className={`lang-collapsible ${langOpen ? 'expanded' : ''}`}>
-                  <div className="language-grid" style={{ padding: '8px 0 0 0' }}>
-                    {LANGUAGES.map((lang) => (
-                      <button key={lang.code} type="button" className={`language-chip ${language === lang.code ? 'selected' : ''}`} onClick={() => { setLanguage(lang.code); setLangOpen(false); }}>
-                        <span className="chip-flag">{lang.flag}</span><span className="chip-name">{lang.label}</span>
-                      </button>
-                    ))}
-                  </div>
+                </div>
+              </div>
+              <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleAvatarUpload} />
+              <span className="login-hint">Opcional · foto máx 2 MB</span>
+            </div>
+
+            {/* Plan */}
+            <div className="login-field">
+              <label className="login-label">Plan</label>
+              <div className="reg-plan-row">
+                <div className="reg-plan-card reg-plan-free">
+                  <span className="reg-plan-icon"><Zap size={18} /></span>
+                  <strong className="reg-plan-name">Free</strong>
+                  <ul className="reg-plan-features">
+                    <li>Historial 24 horas</li>
+                    <li>Hasta 2 canales</li>
+                    <li>ES / EN</li>
+                  </ul>
+                  <span className="reg-plan-status active">Seleccionado</span>
+                </div>
+                <div className="reg-plan-card reg-plan-pro" title="Próximamente">
+                  <span className="reg-plan-icon"><Crown size={18} /></span>
+                  <strong className="reg-plan-name">Pro</strong>
+                  <ul className="reg-plan-features">
+                    <li>Historial 30 días</li>
+                    <li>Canales ilimitados</li>
+                    <li>+10 idiomas</li>
+                  </ul>
+                  <span className="reg-plan-status locked"><Lock size={11} /> Pronto</span>
                 </div>
               </div>
             </div>
 
-            <div className="login-field">
-              <label className="login-label" htmlFor="register-display-name">Nombre a Mostrar</label>
-              <input
-                id="register-display-name"
-                type="text"
-                className="login-input"
-                placeholder="Cómo te verán los demás"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                maxLength={50}
-              />
-              <span className="login-hint">Opcional — por defecto será tu usuario</span>
-            </div>
-
-            <div className="login-field center">
-              <label className="login-label" style={{ textAlign: 'center' }}>Foto de Perfil</label>
-              <div className="login-avatar" onClick={() => fileRef.current?.click()}>
-                {avatarUrl ? (
-                  <img src={avatarUrl} alt="avatar" className="login-avatar-img" />
-                ) : (
-                  <span className="login-avatar-placeholder">
-                    {(displayName || username)?.[0]?.toUpperCase() || '📷'}
-                  </span>
-                )}
-                <div className="login-avatar-overlay">{avatarUrl ? 'Cambiar' : 'Subir'}</div>
-              </div>
-              <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleAvatarUpload} />
-              <span className="login-hint">Opcional · Máx 2MB</span>
-            </div>
-
             <div className="login-form-actions">
-              <button type="button" className="login-back" onClick={() => setStep(1)}>← Atrás</button>
+              <button type="button" className="login-back" onClick={() => setStep(1)}><ArrowLeft size={14} /> Atrás</button>
               <button
                 id="register-submit"
                 type="submit"
-                className="login-submit flex1"
+                className="login-submit"
+                style={{ flex: 1 }}
                 disabled={loading}
               >
-                {loading ? (
-                  <span className="login-loading"><span /><span /><span /></span>
-                ) : (
-                  <>Crear Cuenta</>
-                )}
+                {loading
+                  ? <span className="login-loading"><span /><span /><span /></span>
+                  : 'Crear Cuenta'}
               </button>
             </div>
           </form>
+        )}
+
+        {/* ── Recuperar contraseña paso 1: ingresar correo ───────────── */}
+        {mode === 'forgot' && step === 1 && !resetDone && (
+          <form onSubmit={handleForgotStep1} className="login-form step-anim">
+            <p className="forgot-desc">
+              Ingresa tu correo y te permitiremos crear una nueva contraseña.
+            </p>
+            <div className="login-field">
+              <label className="login-label" htmlFor="forgot-email">Correo Electrónico</label>
+              <input
+                id="forgot-email"
+                type="email"
+                className="login-input"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoFocus
+                required
+                disabled={loading}
+              />
+            </div>
+            <div className="login-form-actions">
+              <button type="button" className="login-back" onClick={() => switchMode('login')}>
+                <ArrowLeft size={14} /> Volver
+              </button>
+              <button
+                type="submit"
+                className="login-submit"
+                style={{ flex: 1 }}
+                disabled={loading || !email.trim()}
+              >
+                {loading
+                  ? <span className="login-loading"><span /><span /><span /></span>
+                  : 'Continuar →'}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* ── Recuperar contraseña paso 2: nueva contraseña ──────────── */}
+        {mode === 'forgot' && step === 2 && !resetDone && (
+          <form onSubmit={handleForgotStep2} className="login-form step-anim">
+            <p className="forgot-desc">
+              Crea una nueva contraseña para <strong>{email}</strong>.
+            </p>
+            <div className="login-field">
+              <label className="login-label" htmlFor="forgot-new-pass">Nueva Contraseña</label>
+              <div className="password-wrapper">
+                <input
+                  id="forgot-new-pass"
+                  type={showPassword ? 'text' : 'password'}
+                  className="login-input"
+                  placeholder="Mínimo 8 letras, 1 mayúscula, 1 número"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoFocus
+                  required
+                  disabled={loading}
+                />
+                <button type="button" className="password-toggle" onClick={() => setShowPassword(!showPassword)} tabIndex={-1}>
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+              <div className="password-requirements">
+                <span className={password.length >= 8 ? 'met' : ''}>✓ 8+ caracteres</span>
+                <span className={/[A-Z]/.test(password) ? 'met' : ''}>✓ Mayúscula</span>
+                <span className={/[0-9]/.test(password) ? 'met' : ''}>✓ Número</span>
+              </div>
+            </div>
+            <div className="login-field">
+              <label className="login-label" htmlFor="forgot-confirm-pass">Confirmar Contraseña</label>
+              <input
+                id="forgot-confirm-pass"
+                type="password"
+                className="login-input"
+                placeholder="Repite tu nueva contraseña"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                required
+                disabled={loading}
+              />
+              {confirmPassword && password !== confirmPassword && (
+                <span className="login-hint error-hint">Las contraseñas no coinciden</span>
+              )}
+            </div>
+            <div className="login-form-actions">
+              <button type="button" className="login-back" onClick={() => setStep(1)}>
+                <ArrowLeft size={14} /> Atrás
+              </button>
+              <button
+                type="submit"
+                className="login-submit"
+                style={{ flex: 1 }}
+                disabled={loading || !password || !confirmPassword}
+              >
+                {loading
+                  ? <span className="login-loading"><span /><span /><span /></span>
+                  : <><KeyRound size={15} /> Restablecer</>}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* ── Contraseña restablecida con éxito ──────────────────────── */}
+        {mode === 'forgot' && resetDone && (
+          <div className="forgot-success step-anim">
+            <CheckCircle2 size={44} className="forgot-success-icon" />
+            <h3>¡Contraseña actualizada!</h3>
+            <p>Ya puedes iniciar sesión con tu nueva contraseña.</p>
+            <button className="login-submit" onClick={() => switchMode('login')}>
+              Ir al inicio de sesión
+            </button>
+          </div>
         )}
 
         {/* frase random abajo */}

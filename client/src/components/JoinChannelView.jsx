@@ -4,7 +4,13 @@
 // Tiene traducciones al tiro, mensajes de voz y te avisa quién está conectado.
 // ********************************************************************************
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import { useHistoryBack } from '../hooks/useHistoryBack';
+import {
+  Hash, Users, Mic, Square, Volume2, VolumeX,
+  Pencil, X, ArrowLeft, ChevronDown, ChevronsUp,
+  Send, AlertTriangle, MessageCircle, LogOut,
+} from 'lucide-react';
 import { socket } from '../services/socket';
 
 // ── Tabla de idioma → emoji bandera ──────────────────────────────────────────
@@ -59,6 +65,10 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
   const [processingUser, setProcessingUser] = useState(null);
   const [mensajeEditando, setMensajeEditando] = useState(null);
 
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
+
+  const goBack = useHistoryBack(onVolver);
+
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const typingTimerRef = useRef(null);
@@ -66,6 +76,12 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
 
   // Referencia para el auto-scroll al final de la lista de mensajes
   const finListaRef = useRef(null);
+
+  // ── HU-09: historial paginado ─────────────────────────────────────────
+  const historialRef       = useRef([]);   // historial completo filtrado por plan
+  const [loadedCount, setLoadedCount] = useState(0);
+  const prevScrollHeightRef  = useRef(null); // para preservar posición al cargar más
+  const messagesContainerRef = useRef(null);
 
   // Generador de sonido super sencillo en JavaScript nativo (requisito universitario: cero dependencias)
   const playNotificationSound = () => {
@@ -89,20 +105,29 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
   useEffect(() => {
     if (!isScrolledUpRef.current) {
       setTimeout(() => finListaRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
-    } else {
-      // Si recibimos esto y estamos scrolled up, prendemos el badge
-      // Nota: lo encendemos si los mensajes cambian por un msg nuevo (no propio o de sistema lo asumiremos)
-      // La mejor forma de aislarlo es en el event handler, acá solo es un fallback.
     }
   }, [mensajes]);
 
+  // ── HU-09: preservar posición al prepend de historial ──────────────────────
+  useLayoutEffect(() => {
+    if (prevScrollHeightRef.current !== null && messagesContainerRef.current) {
+      const container = messagesContainerRef.current;
+      container.scrollTop = container.scrollHeight - prevScrollHeightRef.current;
+      prevScrollHeightRef.current = null;
+    }
+  }, [loadedCount]);
+
   const handleScrollChat = (e) => {
     const { scrollTop, scrollHeight, clientHeight } = e.target;
-    // Tolerancia de 150px
     const isAtBottom = scrollHeight - scrollTop - clientHeight < 150;
     isScrolledUpRef.current = !isAtBottom;
     if (isAtBottom && nuevosMensajesAbajo) {
-      setNuevosMensajesAbajo(false); // Quitar el globo si ya bajó manual
+      setNuevosMensajesAbajo(false);
+    }
+    // HU-09: cargar más historial al llegar al tope
+    if (scrollTop === 0 && loadedCount < historialRef.current.length) {
+      prevScrollHeightRef.current = scrollHeight;
+      setLoadedCount((prev) => Math.min(prev + 20, historialRef.current.length));
     }
   };
 
@@ -126,12 +151,25 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
       setCargando(false);
       if (respuesta.exito) {
         setCanal(respuesta.canal);
-        // Guardamos los mensajes viejos que ya estaban en el chat
-        const historialFormateado = respuesta.historial.map((m) => ({
-          ...m,
-          tipo: 'mensaje',
-        }));
-        setMensajes(historialFormateado);
+
+        // HU-09: filtrar historial por plan (Free=24h, Pro=30 días)
+        const now    = Date.now();
+        const planMs = profile.plan === 'pro'
+          ? 30 * 24 * 60 * 60 * 1000
+          :      24 * 60 * 60 * 1000;
+
+        const filtrado = respuesta.historial
+          .filter((m) => now - new Date(m.timestamp).getTime() <= planMs)
+          .map((m) => ({
+            ...m,
+            tipo:         m.translations ? 'mensaje-traducido' : 'mensaje',
+            originalText: m.originalText || m.texto,
+            originalLang: m.idioma,
+          }));
+
+        historialRef.current = filtrado;
+        setLoadedCount(Math.min(20, filtrado.length));
+        setMensajes([]); // mensajes en vivo empiezan vacíos
       } else {
         setError(respuesta.error);
       }
@@ -346,8 +384,12 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
     const otrosConectados = miembrosConectados.filter(
       (m) => m.username !== profile.username
     );
-    const hayOtros        = otrosConectados.length > 0;
-    const totalEnCanal    = miembrosConectados.length;
+    const hayOtros     = otrosConectados.length > 0;
+    const totalEnCanal = miembrosConectados.length;
+
+    // HU-09: combinar historial paginado + mensajes en vivo
+    const historialMostrado = historialRef.current.slice(-loadedCount);
+    const todosLosMensajes  = [...historialMostrado, ...mensajes];
 
     return (
       <div className="channel-chat-view">
@@ -358,7 +400,7 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
 
             {/* Nombre del canal + idioma */}
             <div className="channel-name">
-              <span>📺</span>
+              <Hash size={15} strokeWidth={2.5} />
               <span>{canal.nombre}</span>
               <span className="channel-lang-badge">{canal.idioma.toUpperCase()}</span>
             </div>
@@ -376,7 +418,7 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
 
             {/* Contador de personas conectadas en el canal */}
             <div className="people-count-badge">
-              <span className="people-icon">👥</span>
+              <Users size={13} />
               <span className="people-number">{totalEnCanal}</span>
               <span className="people-label">
                 {totalEnCanal === 1 ? 'persona' : 'personas'}
@@ -403,10 +445,10 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
               }} 
               title={sonidoActivado ? "Desactivar sonidos" : "Activar sonidos"}
             >
-              {sonidoActivado ? '🔊' : '🔇'}
+              {sonidoActivado ? <Volume2 size={16} /> : <VolumeX size={16} />}
             </button>
 
-            <button className="btn-back" onClick={onVolver}>← Salir</button>
+            <button className="btn-back" onClick={() => setShowExitConfirm(true)}><ArrowLeft size={15} /> Salir</button>
           </div>
         </div>
 
@@ -435,12 +477,23 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
         )}
 
         {/* ── Lista de mensajes ────────────────────────────────────────────── */}
-        <div className="messages-list" onScroll={handleScrollChat}>
-          {mensajes.length === 0 && (
+        <div className="messages-list" ref={messagesContainerRef} onScroll={handleScrollChat}>
+
+          {/* HU-09: indicador de historial disponible / inicio */}
+          {loadedCount < historialRef.current.length && (
+            <div className="msg-system history-top-indicator">
+              <ChevronsUp size={13} /> Sube para ver más ({historialRef.current.length - loadedCount} mensajes anteriores)
+            </div>
+          )}
+          {loadedCount > 0 && loadedCount >= historialRef.current.length && (
+            <div className="msg-system history-top-indicator">— Inicio del historial —</div>
+          )}
+
+          {todosLosMensajes.length === 0 && (
             <p className="msg-system">Aún no hay mensajes. ¡Sé el primero en escribir!</p>
           )}
 
-          {mensajes.map((msg, indice) => {
+          {todosLosMensajes.map((msg, indice) => {
             if (msg.tipo === 'sistema') {
               return <div key={indice} className="msg-system">{msg.texto}</div>;
             }
@@ -448,42 +501,37 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
             const esMio   = msg.username === profile.username;
             const bandera = obtenerBandera(msg.originalLang || msg.idioma || 'en');
 
-            // Extraemos la traducción al idioma preferido si existe, sino caemos al original
             const textoMostrar = msg.tipo === 'mensaje-traducido'
               ? (msg.translations?.[profile.language || 'en']?.text || msg.originalText)
               : msg.texto;
 
             return (
-              <div key={indice} className={`msg-bubble ${esMio ? 'propio' : 'ajeno'}`}>
+              <div key={`${msg.idMensaje || ''}-${indice}`} className={`msg-bubble ${esMio ? 'propio' : 'ajeno'}`}>
                 {!esMio && (
                   <div className="msg-username">
-                    <span className="msg-flag" aria-label={`Idioma original`}>{bandera}</span>
+                    <span className="msg-flag" aria-label="Idioma original">{bandera}</span>
                     {msg.username}
                   </div>
                 )}
                 <div className="msg-text">
                   {esMio && <span className="msg-flag-own" title="Tu idioma">{bandera}</span>}
-                  
                   <span className="msg-content">
                     {textoMostrar}
                     {msg.editado && <small className="edited-flag"> (editado)</small>}
                   </span>
-
-                  {/* Mostramos el texto original abajito en texto tenue si fue traducido */}
                   {msg.tipo === 'mensaje-traducido' && textoMostrar !== msg.originalText && (
                     <div className="msg-original">Original: {msg.originalText}</div>
                   )}
-
                   {esMio && (
-                    <button 
-                      className="btn-edit-msg" 
+                    <button
+                      className="btn-edit-msg"
                       onClick={() => {
                         setMensajeEditando(msg.idMensaje);
                         setTextoMensaje(msg.originalText || msg.texto);
                       }}
                       title="Editar mensaje"
                     >
-                      ✏️
+                      <Pencil size={12} />
                     </button>
                   )}
                 </div>
@@ -493,16 +541,16 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
 
           {/* Indicador de procesamiento del backend */}
           {processingUser && (
-             <div className="msg-system processing">
-                <span className="spinner-micro"></span>
-                {processingUser.username} está procesando {processingUser.isAudio ? 'audio' : 'traducción'}...
-             </div>
+            <div className="msg-system processing">
+              <span className="spinner-micro"></span>
+              {processingUser.username} está procesando {processingUser.isAudio ? 'audio' : 'traducción'}...
+            </div>
           )}
 
-          {/* Typing indicator del debounce */}
+          {/* Typing indicator */}
           {Object.keys(usuariosEscribiendo).length > 0 && (
             <div className="msg-system typing-indicator">
-               💬 {Object.keys(usuariosEscribiendo).join(', ')} está escribiendo<span className="dots">...</span>
+              <MessageCircle size={13} /> {Object.keys(usuariosEscribiendo).join(', ')} está escribiendo<span className="dots">...</span>
             </div>
           )}
 
@@ -515,7 +563,25 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
             setNuevosMensajesAbajo(false);
             finListaRef.current?.scrollIntoView({ behavior: 'smooth' });
           }}>
-             ⬇ Nuevo mensaje flotante
+             <ChevronDown size={14} /> Nuevo mensaje
+          </div>
+        )}
+
+        {/* ── Confirmación de salida ────────────────────────────────────────── */}
+        {showExitConfirm && (
+          <div className="modal-overlay" onClick={() => setShowExitConfirm(false)}>
+            <div className="modal-box exit-confirm-box" onClick={(e) => e.stopPropagation()}>
+              <h2>¿Salir del canal?</h2>
+              <p className="modal-subtitle">Tu conexión en tiempo real se cerrará.</p>
+              <div className="modal-actions">
+                <button className="btn-secondary" onClick={() => setShowExitConfirm(false)}>
+                  Cancelar
+                </button>
+                <button className="btn-danger" onClick={goBack}>
+                  <LogOut size={15} /> Salir
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -531,7 +597,7 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
               }}
               title="Cancelar edición"
             >
-              ❌
+              <X size={16} />
             </button>
           ) : (
             <button
@@ -540,7 +606,7 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
               onClick={handleGrabarVoz}
               title={estaGrabando ? 'Parar de grabar' : 'Grabar mensaje de voz (Whisper)'}
             >
-               {estaGrabando ? '⏹' : '🎤'}
+               {estaGrabando ? <Square size={16} /> : <Mic size={16} />}
             </button>
           )}
 
@@ -556,7 +622,7 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
             className="btn-send"
             disabled={!textoMensaje.trim() && !estaGrabando}
           >
-            {mensajeEditando ? 'Guardar' : 'Enviar'}
+            {mensajeEditando ? 'Guardar' : <Send size={15} />}
           </button>
         </form>
 
@@ -569,7 +635,7 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
     <div className="join-wrapper">
 
       <div className="join-header">
-        <button className="btn-back" onClick={onVolver}>← Volver</button>
+        <button className="btn-back" onClick={goBack}><ArrowLeft size={15} /> Volver</button>
         <h2>Unirse a un Canal</h2>
       </div>
 
@@ -600,7 +666,7 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
 
         {error && (
           <div className="error-banner" role="alert">
-            <span>⚠️</span>
+            <AlertTriangle size={14} />
             <span>{error}</span>
           </div>
         )}
@@ -610,7 +676,7 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
           className="btn-primary"
           disabled={cargando || !codigoValido}
         >
-          {cargando ? <span className="spinner" /> : 'Unirse al Canal →'}
+          {cargando ? <span className="spinner" /> : <><Send size={15} /> Unirse al Canal</>}
         </button>
 
       </form>

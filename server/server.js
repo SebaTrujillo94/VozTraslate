@@ -12,6 +12,9 @@ import path from 'path';
 import os from 'os';
 import dotenv from 'dotenv';
 import Groq from 'groq-sdk';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { pool, initDB } from './db.js';
 
 // Aquí cargamos nuestra llave secreta del archivo .env para que funcione la IA
 dotenv.config();
@@ -25,8 +28,137 @@ app.use(cors()); // Esto permite que el cliente se conecte sin que el navegador 
 app.use(express.json()); // Para que el servidor entienda si le mandamos datos en formato JSON
 
 // Esto es solo para saber si el servidor está vivo, si entras a /api/health verás el OK
-app.get('/api/health', (req, res) => {
+app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', mensaje: 'Servidor VozTranslate corriendo correctamente.' });
+});
+
+// ── Helpers para autenticacion ────────────────────────────────────────────────
+// convierte la fila de postgres al formato que espera el frontend
+
+function mapUser(row) {
+  return {
+    id: String(row.id),
+    email: row.email,
+    username: row.username,
+    displayName: row.display_name,
+    language: row.language,
+    preferredLanguage: row.language,
+    avatarUrl: row.avatar_url,
+    plan: row.plan,
+  };
+}
+
+function authMiddleware(req, res, next) {
+  const header = req.headers.authorization;
+  if (!header?.startsWith('Bearer ')) return res.status(401).json({ error: 'No autenticado' });
+  try {
+    req.user = jwt.verify(header.slice(7), process.env.JWT_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ error: 'Token inválido o expirado' });
+  }
+}
+
+// ── REST: Auth endpoints ──────────────────────────────────────────────────────
+
+app.post('/api/auth/register', async (req, res) => {
+  const { email, password, username, displayName, preferredLanguage } = req.body;
+  if (!email || !password || !username)
+    return res.status(400).json({ error: 'Faltan datos requeridos' });
+  try {
+    const hash = await bcrypt.hash(password, 10);
+    const { rows } = await pool.query(
+      `INSERT INTO users (email, username, password, display_name, language)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, email, username, display_name, language, avatar_url, plan`,
+      [email.toLowerCase(), username.toLowerCase(), hash,
+       displayName || username, preferredLanguage || 'en']
+    );
+    const user  = mapUser(rows[0]);
+    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+    res.json({ token, user });
+  } catch (e) {
+    if (e.code === '23505') {
+      const field = e.constraint?.includes('email') ? 'correo' : 'usuario';
+      return res.status(409).json({ error: `El ${field} ya está en uso` });
+    }
+    console.error(e);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ error: 'Faltan datos requeridos' });
+  try {
+    const { rows } = await pool.query('SELECT * FROM users WHERE email = $1', [email.toLowerCase()]);
+    const row = rows[0];
+    if (!row || !(await bcrypt.compare(password, row.password)))
+      return res.status(401).json({ error: 'Correo o contraseña incorrectos' });
+    const user  = mapUser(row);
+    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+    res.json({ token, user });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.get('/api/auth/me', authMiddleware, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, email, username, display_name, language, avatar_url, plan FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Usuario no encontrado' });
+    res.json({ user: mapUser(rows[0]) });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.put('/api/auth/profile', authMiddleware, async (req, res) => {
+  const { displayName, preferredLanguage, avatarUrl } = req.body;
+  try {
+    const { rows } = await pool.query(
+      `UPDATE users SET
+         display_name = COALESCE($1, display_name),
+         language     = COALESCE($2, language),
+         avatar_url   = COALESCE($3, avatar_url)
+       WHERE id = $4
+       RETURNING id, email, username, display_name, language, avatar_url, plan`,
+      [displayName ?? null, preferredLanguage ?? null, avatarUrl ?? null, req.user.id]
+    );
+    res.json({ message: 'Perfil actualizado', user: mapUser(rows[0]) });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+app.post('/api/auth/check-email', async (req, res) => {
+  const { email } = req.body;
+  const { rows } = await pool.query('SELECT id FROM users WHERE email = $1', [email?.toLowerCase()]);
+  if (!rows[0]) return res.status(404).json({ error: 'No existe una cuenta con ese correo' });
+  res.json({ found: true });
+});
+
+app.post('/api/auth/reset-password', async (req, res) => {
+  const { email, newPassword } = req.body;
+  if (!email || !newPassword) return res.status(400).json({ error: 'Faltan datos requeridos' });
+  try {
+    const hash = await bcrypt.hash(newPassword, 10);
+    const { rows } = await pool.query(
+      'UPDATE users SET password = $1 WHERE email = $2 RETURNING id',
+      [hash, email.toLowerCase()]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Correo no encontrado' });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
 });
 
 // Unimos Express con Socket.io para poder tener chat en tiempo real
@@ -40,6 +172,17 @@ const io = new Server(httpServer, {
 
 // Lista de canales abiertos (como salones de chat)
 const canales = new Map();
+
+// Canal público permanente entregado por la plataforma (siempre existe, no cuenta en límite de usuario)
+canales.set('PUB-MAIN', {
+  codigo:     'PUB-MAIN',
+  nombre:     'Canal General',
+  creador:    'VozTranslate',
+  idioma:     'es',
+  tipo:       'public',
+  permanente: true,
+  historial:  [],
+});
 
 // Para saber qué persona está en qué canal
 const socketCanal = new Map();
@@ -122,6 +265,10 @@ async function broadcastTranslation(io, codigoCanal, mensajeOriginal, esEdicion 
 
   await Promise.all(promesas);
 
+  // Guardamos las traducciones en el objeto del mensaje para que el historial las tenga
+  mensajeOriginal.translations = translations;
+  mensajeOriginal.originalText = mensajeOriginal.originalText || mensajeOriginal.texto;
+
   // Mandamos el mensaje ya con sus traducciones a todo el salón
   io.to(codigoCanal).emit(esEdicion ? 'message-edited' : 'translated-message', {
     idMensaje,
@@ -151,10 +298,12 @@ function generarCodigo() {
 // ── Le avisamos a todos cuántos canales hay abiertos ──────────────────────────
 function emitirEstadisticas() {
   const listaCanales = Array.from(canales.values()).map(c => ({
-    codigo: c.codigo,
-    nombre: c.nombre,
-    creador: c.creador,
-    idioma: c.idioma
+    codigo:     c.codigo,
+    nombre:     c.nombre,
+    creador:    c.creador,
+    idioma:     c.idioma,
+    tipo:       c.tipo || 'public',
+    permanente: !!c.permanente,
   }));
   io.emit('stats-update', { totalCanales: canales.size, listaCanales });
 }
@@ -184,7 +333,12 @@ io.on('connection', (socket) => {
   // Función para mandar la lista de canales rápido
   const enviarStatsInit = (sock) => {
     const listaCanales = Array.from(canales.values()).map(c => ({
-      codigo: c.codigo, nombre: c.nombre, creador: c.creador, idioma: c.idioma
+      codigo:     c.codigo,
+      nombre:     c.nombre,
+      creador:    c.creador,
+      idioma:     c.idioma,
+      tipo:       c.tipo || 'public',
+      permanente: !!c.permanente,
     }));
     sock.emit('stats-update', { totalCanales: canales.size, listaCanales });
   };
@@ -205,17 +359,18 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Límite MVP: máximo 2 canales globales en todo el servidor
-    if (canales.size >= 2) {
+    // Contamos solo canales privados creados por usuarios (no el canal público permanente)
+    const canalesUsuario = Array.from(canales.values()).filter(c => !c.permanente);
+    if (canalesUsuario.length >= 2) {
       socket.emit('create-channel-response', {
         exito: false,
-        error: 'Límite global alcanzado: el MVP solo permite 2 canales activos en total. Cierra uno para crear otro.',
+        error: 'Límite alcanzado: solo se permiten 2 canales privados activos. Cierra uno para crear otro.',
       });
       return;
     }
 
     const codigo     = generarCodigo();
-    const nuevoCanal = { nombre, creador, idioma, codigo, historial: [] };
+    const nuevoCanal = { nombre, creador, idioma, codigo, tipo: 'private', historial: [] };
 
     canales.set(codigo, nuevoCanal);
     console.log(`📺 Canal creado: "${nombre}" [${codigo}] por ${creador}`);
@@ -227,7 +382,7 @@ io.on('connection', (socket) => {
   // ── Cuando alguien (el creador) decide BORRAR el salón ─────────────────────
   socket.on('delete-channel', (codigo) => {
     const canalObj = canales.get(codigo);
-    if (!canalObj) return;
+    if (!canalObj || canalObj.permanente) return;
 
     // Patada a todos los que estaban adentro, se cierra el boliche
     io.to(codigo).emit('channel-deleted-notify');
@@ -325,7 +480,7 @@ io.on('connection', (socket) => {
   });
 
   // ── Evento: edit-message ───────────────────────────────────────────────────
-  socket.on('edit-message', async ({ codigo, idMensaje, username, newText, idioma }) => {
+  socket.on('edit-message', async ({ codigo, idMensaje, username, newText }) => {
     const canal = canales.get(codigo);
     if (!canal) return;
 
@@ -450,6 +605,12 @@ io.on('connection', (socket) => {
 
 // ── Iniciar el servidor ───────────────────────────────────────────────────────
 const PUERTO = 3001;
+
+// Arrancamos aunque falle la DB (Socket.io funciona igual)
+initDB().catch((e) => {
+  console.warn(`⚠️  PostgreSQL no disponible: ${e.message}`);
+  console.warn('   Auth REST endpoints deshabilitados. Configura DATABASE_URL en .env.');
+});
 
 httpServer.listen(PUERTO, () => {
   console.log(`\n🚀 Servidor VozTranslate corriendo en el puerto ${PUERTO}`);

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Sun, Moon } from 'lucide-react';
 import LoginScreen      from './components/LoginScreen';
 import ChannelDashboard from './components/ChannelDashboard';
 import { getToken, clearToken, getMe } from './services/api';
@@ -37,6 +38,7 @@ export default function App() {
             displayName: user.displayName,
             language:    user.preferredLanguage || 'en',
             avatarUrl:   user.avatarUrl,
+            plan:        user.plan || 'free',
           });
         })
         .catch(() => {
@@ -58,7 +60,12 @@ export default function App() {
       displayName: p.displayName,
       language:    p.preferredLanguage || p.language || 'en',
       avatarUrl:   p.avatarUrl,
+      plan:        p.plan || 'free',
     });
+  };
+
+  const handleUpdateProfile = ({ displayName, language }) => {
+    setProfile((prev) => ({ ...prev, displayName, language }));
   };
 
   // Función para cerrar sesión: borramos el token y limpiamos el estado
@@ -88,7 +95,7 @@ export default function App() {
 
       {/* Botón flotante para cambiar entre tema oscuro y claro */}
       <button className="global-theme-toggle" onClick={toggleTheme} title="Cambiar tema">
-        {theme === 'dark' ? '☀️' : '🌙'}
+        {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
       </button>
 
       {/* Si no hay sesión activa, mostramos el formulario de login/registro */}
@@ -99,6 +106,7 @@ export default function App() {
         <ChannelDashboard
           profile={profile}
           onCerrarSesion={handleLogout}
+          onUpdateProfile={handleUpdateProfile}
         />
       )}
 

@@ -7,6 +7,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { useState, useEffect } from 'react';
+import { CheckCircle2, Copy, Check, AlertTriangle, Sparkles } from 'lucide-react';
 import { socket } from '../services/socket';
 
 // Lista de idiomas disponibles para el canal
@@ -84,7 +85,7 @@ export default function CreateChannelModal({ profile, onCerrar }) {
     socket.emit('create-channel', {
       nombre:  nombre.trim(),
       idioma,
-      creador: profile.username, // el servidor usará esto para validar el límite de 2 canales
+      creador: profile.username,
     });
   };
 
@@ -101,24 +102,22 @@ export default function CreateChannelModal({ profile, onCerrar }) {
   if (canalCreado) {
     return (
       <div className="modal-overlay" onClick={onCerrar}>
-        {/* stopPropagation evita que el click en la caja cierre el modal */}
         <div className="modal-box" onClick={(e) => e.stopPropagation()}>
           <div className="success-screen">
-            <span className="success-icon">🎉</span>
+            <span className="success-icon"><CheckCircle2 size={40} /></span>
             <h2>¡Canal creado!</h2>
+
             <p>
               Comparte este código con las personas que quieras invitar a
               <strong> {canalCreado.nombre}</strong>:
             </p>
-
-            {/* Caja con el código y botón de copiar */}
             <div className="invite-code-box">
               <span className="invite-code-text">{canalCreado.codigo}</span>
               <button
                 className={`btn-copy ${copiado ? 'copied' : ''}`}
                 onClick={handleCopiar}
               >
-                {copiado ? '✓ Copiado' : '📋 Copiar'}
+                {copiado ? <><Check size={13} /> Copiado</> : <><Copy size={13} /> Copiar</>}
               </button>
             </div>
 
@@ -135,9 +134,9 @@ export default function CreateChannelModal({ profile, onCerrar }) {
   return (
     <div className="modal-overlay" onClick={onCerrar}>
       <div className="modal-box" onClick={(e) => e.stopPropagation()}>
-        <h2>✨ Crear Canal</h2>
+        <h2><Sparkles size={18} /> Crear Canal</h2>
         <p className="modal-subtitle">
-          Tu plan gratuito permite crear hasta <strong>2 canales</strong>.
+          Puedes tener hasta <strong>2 canales privados</strong>. El canal público es provisto por la plataforma.
         </p>
 
         <form className="modal-form" onSubmit={handleEnviar}>
@@ -179,7 +178,7 @@ export default function CreateChannelModal({ profile, onCerrar }) {
           {/* Mensaje de error (aparece solo si hay un error) */}
           {error && (
             <div className="error-banner" role="alert">
-              <span>⚠️</span>
+              <AlertTriangle size={14} />
               <span>{error}</span>
             </div>
           )}
