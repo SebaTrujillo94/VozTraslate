@@ -22,8 +22,13 @@ export default function ChannelDashboard({ profile, onCerrarSesion, onUpdateProf
     if (!socket.connected) socket.connect();
     socket.emit('get-stats');
     const fn = ({ totalCanales, listaCanales = [] }) => {
-      setTotal(totalCanales);
-      setLista(listaCanales);
+      // solo actualiza si cambia algo, para no redibujar de mas
+      setTotal(prev => prev !== totalCanales ? totalCanales : prev);
+      setLista(prev => {
+        const prevStr = JSON.stringify(prev);
+        const nextStr = JSON.stringify(listaCanales);
+        return prevStr === nextStr ? prev : listaCanales;
+      });
     };
     socket.on('stats-update', fn);
     return () => socket.off('stats-update', fn);

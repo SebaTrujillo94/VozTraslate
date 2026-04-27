@@ -7,7 +7,7 @@
   align-items: center;
   justify-content: center;
   background: var(--bg-primary);
-  overflow: hidden;
+  overflow-x: hidden;
 }
 
 /* ── Global Theme Toggle (top-right on login/join screens) ────────── */
