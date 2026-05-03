@@ -10,8 +10,10 @@ import {
   Hash, Users, Mic, Square, Volume2, VolumeX,
   Pencil, X, ArrowLeft, ChevronDown, ChevronsUp,
   Send, AlertTriangle, MessageCircle, LogOut,
+  Download, Lock,
 } from 'lucide-react';
 import { socket } from '../services/socket';
+import { fetchChannelHistory, exportChannelHistory } from '../services/api';
 
 // ── Tabla de idioma → emoji bandera ──────────────────────────────────────────
 // Usamos emojis Unicode de banderas para que funcionen sin imágenes externas.
@@ -79,10 +81,25 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
   const finListaRef = useRef(null);
 
   // ── HU-09: historial paginado ─────────────────────────────────────────
-  const historialRef       = useRef([]);   // historial completo filtrado por plan
+  const historialRef         = useRef([]);   // historial completo filtrado por plan
   const [loadedCount, setLoadedCount] = useState(0);
   const prevScrollHeightRef  = useRef(null); // para preservar posición al cargar más
   const messagesContainerRef = useRef(null);
+
+  // hasMore: ¿hay más mensajes en el servidor más viejos que los que tenemos?
+  const [hasMore, setHasMore] = useState(false);
+  // cargandoMas: evita que se hagan dos fetches al mismo tiempo si el usuario
+  // hace scroll muy rápido. Usamos ref + estado para no tener closures viejos.
+  const [cargandoMas, setCargandoMas] = useState(false);
+  const cargandoMasRef = useRef(false); // ref sincrono para el check en el handler
+
+  // ── HU-10: exportar historial ──────────────────────────────────────────
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportFrom,      setExportFrom]      = useState('');
+  const [exportTo,        setExportTo]        = useState('');
+  const [exportFormato,   setExportFormato]   = useState('txt'); // 'txt' | 'pdf'
+  const [exportCargando,  setExportCargando]  = useState(false);
+  const [exportError,     setExportError]     = useState('');
 
   // Generador de sonido super sencillo en JavaScript nativo (requisito universitario: cero dependencias)
   const playNotificationSound = () => {
@@ -159,10 +176,207 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
     if (isAtBottom && nuevosMensajesAbajo) {
       setNuevosMensajesAbajo(false);
     }
-    // HU-09: cargar más historial al llegar al tope
-    if (scrollTop === 0 && loadedCount < historialRef.current.length) {
-      prevScrollHeightRef.current = scrollHeight;
-      setLoadedCount((prev) => Math.min(prev + 20, historialRef.current.length));
+    // HU-09: si el usuario llegó al tope del scroll...
+    if (scrollTop === 0) {
+      if (loadedCount < historialRef.current.length) {
+        // todavía hay historial local sin mostrar, mostramos 20 más
+        prevScrollHeightRef.current = scrollHeight;
+        setLoadedCount((prev) => Math.min(prev + 20, historialRef.current.length));
+      } else if (hasMore && !cargandoMasRef.current) {
+        // ya mostramos todo lo local, pedimos más al servidor
+        cargarMasHistorial();
+      }
+    }
+  };
+
+  // ── HU-09: carga mensajes más viejos desde el servidor ───────────────────────
+  // Se llama cuando el usuario llegó al tope y ya no hay más historial local
+  const cargarMasHistorial = async () => {
+    if (!canal || cargandoMasRef.current) return;
+
+    // bloqueamos con ref para evitar doble fetch si el usuario scrollea muy rápido
+    cargandoMasRef.current = true;
+    setCargandoMas(true);
+
+    try {
+      // el mensaje más viejo que tenemos es el primero del arreglo
+      const mensajeMasViejo = historialRef.current[0];
+      if (!mensajeMasViejo) return;
+
+      const data = await fetchChannelHistory(canal.codigo, {
+        before: mensajeMasViejo.timestamp,
+        limit: 20,
+      });
+
+      if (!data.messages || data.messages.length === 0) {
+        setHasMore(false);
+        return;
+      }
+
+      // guardamos el scrollHeight ANTES de agregar los nuevos mensajes
+      // para que el useLayoutEffect pueda restaurar la posición
+      const container = messagesContainerRef.current;
+      if (container) prevScrollHeightRef.current = container.scrollHeight;
+
+      // anteponemos los mensajes viejos al inicio del historial
+      historialRef.current = [...data.messages, ...historialRef.current];
+
+      // mostramos los nuevos mensajes incrementando loadedCount
+      setLoadedCount((prev) => prev + data.messages.length);
+      setHasMore(data.hasMore);
+
+    } catch (e) {
+      console.error('No se pudo cargar más historial:', e.message);
+    } finally {
+      cargandoMasRef.current = false;
+      setCargandoMas(false);
+    }
+  };
+
+  // ── HU-10: genera y descarga el archivo TXT ───────────────────────────────
+  const generarDescargarTXT = ({ messages, canalNombre, codigo }) => {
+    const userLang = profile.language || 'en';
+
+    const lineas = [
+      '=== VozTraslate - Historial del Canal ===',
+      `Canal: #${canalNombre} (${codigo})`,
+      `Periodo: ${exportFrom} / ${exportTo}`,
+      `Generado: ${new Date().toLocaleString()}`,
+      `Total de mensajes: ${messages.length}`,
+      '==========================================',
+      '',
+    ];
+
+    for (const msg of messages) {
+      const fecha     = new Date(msg.timestamp).toLocaleString();
+      const textoBase = msg.originalText || msg.texto;
+      lineas.push(`[${fecha}] ${msg.username}: ${textoBase}`);
+
+      // solo mostramos la traducción si es diferente al texto original
+      const traduccion = msg.translations?.[userLang]?.text;
+      if (traduccion && traduccion !== textoBase) {
+        lineas.push(`  → Traducción (${userLang}): ${traduccion}`);
+      }
+      if (msg.editado) lineas.push('  ✏️ (editado)');
+      lineas.push('');
+    }
+
+    lineas.push('==========================================');
+    lineas.push('Exportado con VozTraslate');
+
+    const blob = new Blob([lineas.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `historial_${codigo}_${exportFrom}_${exportTo}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // ── HU-10: abre ventana de impresión para guardar como PDF ────────────────
+  // No necesitamos ninguna librería, el navegador genera el PDF solito con print()
+  const generarAbrirPDF = ({ messages, canalNombre, codigo }) => {
+    const userLang = profile.language || 'en';
+
+    const mensajesHTML = messages.map(msg => {
+      const fecha      = new Date(msg.timestamp).toLocaleString();
+      const textoBase  = msg.originalText || msg.texto;
+      const traduccion = msg.translations?.[userLang]?.text;
+      const mostrarTr  = traduccion && traduccion !== textoBase;
+
+      return `
+        <div class="mensaje">
+          <div class="msg-cabecera">
+            <strong>${msg.username}</strong>
+            <span class="fecha">${fecha}</span>
+            ${msg.editado ? '<span class="editado">(editado)</span>' : ''}
+          </div>
+          <div class="msg-texto">${textoBase}</div>
+          ${mostrarTr ? `<div class="msg-traduccion">→ ${traduccion}</div>` : ''}
+        </div>
+      `;
+    }).join('');
+
+    // página HTML limpia con estilos de impresión, se abre en pestaña nueva
+    const htmlCompleto = `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Historial #${canalNombre} (${codigo})</title>
+  <style>
+    body { font-family: Arial, sans-serif; font-size: 11pt; color: #1a1a2e; margin: 2cm; }
+    h1   { font-size: 14pt; color: #7c3aed; border-bottom: 2px solid #7c3aed; padding-bottom: 6px; }
+    .meta { font-size: 9pt; color: #555; margin-bottom: 18px; }
+    .mensaje { margin-bottom: 12px; padding: 8px 10px; border-left: 3px solid #dde1f0; page-break-inside: avoid; }
+    .msg-cabecera { display: flex; gap: 10px; margin-bottom: 3px; align-items: baseline; }
+    .msg-cabecera strong { color: #7c3aed; }
+    .fecha   { color: #888; font-size: 8.5pt; }
+    .editado { color: #c97b00; font-size: 8.5pt; }
+    .msg-texto { color: #1a1a2e; line-height: 1.45; }
+    .msg-traduccion { color: #5a6480; font-style: italic; font-size: 9.5pt; margin-top: 3px; }
+    @media print { @page { margin: 2cm; } body { margin: 0; } }
+  </style>
+</head>
+<body>
+  <h1>VozTraslate — #${canalNombre}</h1>
+  <div class="meta">
+    Código: ${codigo} &nbsp;·&nbsp; Periodo: ${exportFrom} al ${exportTo}
+    &nbsp;·&nbsp; Generado: ${new Date().toLocaleString()}
+    &nbsp;·&nbsp; Total: ${messages.length} mensajes
+  </div>
+  ${mensajesHTML}
+</body>
+</html>`;
+
+    const ventana = window.open('', '_blank', 'width=860,height=680');
+    if (ventana) {
+      ventana.document.write(htmlCompleto);
+      ventana.document.close();
+      ventana.focus();
+      // pequeño delay para que los estilos carguen antes de imprimir
+      setTimeout(() => ventana.print(), 400);
+    }
+  };
+
+  // ── HU-10: abre el modal de exportación con fechas por defecto ────────────
+  const handleAbrirExport = () => {
+    // fechas por defecto: últimos 30 días
+    const hoy      = new Date().toISOString().split('T')[0];
+    const hace30   = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    setExportTo(hoy);
+    setExportFrom(hace30);
+    setExportError('');
+    setShowExportModal(true);
+  };
+
+  // ── HU-10: ejecuta la exportación pidiendo datos al servidor ─────────────
+  const handleExportarHistorial = async () => {
+    if (!exportFrom || !exportTo) return;
+    setExportCargando(true);
+    setExportError('');
+
+    try {
+      const data = await exportChannelHistory(canal.codigo, { from: exportFrom, to: exportTo });
+
+      if (!data.messages || data.messages.length === 0) {
+        setExportError('No hay mensajes en el rango de fechas seleccionado.');
+        return;
+      }
+
+      if (exportFormato === 'txt') {
+        generarDescargarTXT(data);
+      } else {
+        generarAbrirPDF(data);
+      }
+
+      setShowExportModal(false);
+    } catch (e) {
+      // si el servidor devuelve 403 es porque no es Pro, mostramos mensaje claro
+      setExportError(e.message || 'Error al exportar el historial');
+    } finally {
+      setExportCargando(false);
     }
   };
 
@@ -205,6 +419,9 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
         historialRef.current = filtrado;
         setLoadedCount(Math.min(20, filtrado.length));
         setMensajes([]); // mensajes en vivo empiezan vacíos
+
+        // HU-09: si el servidor mandó 50 mensajes (el máximo), puede haber más viejos
+        setHasMore(respuesta.historial.length >= 50);
       } else {
         setError(respuesta.error);
       }
@@ -502,6 +719,16 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
                 <span className="words-badge-label"> palabras</span>
               </div>
             )}
+
+            {/* HU-10: botón de exportar historial (Pro solamente) */}
+            <button
+              className={`btn-export ${profile.plan !== 'pro' ? 'locked' : ''}`}
+              onClick={handleAbrirExport}
+              title={profile.plan === 'pro' ? 'Exportar historial (Pro)' : 'Exportar historial — Función Pro'}
+            >
+              {profile.plan === 'pro' ? <Download size={15} /> : <Lock size={14} />}
+            </button>
+
             <button className="btn-back" onClick={() => setShowExitConfirm(true)}><ArrowLeft size={15} /> Salir</button>
           </div>
         </div>
@@ -533,14 +760,26 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
         {/* ── Lista de mensajes ────────────────────────────────────────────── */}
         <div className="messages-list" ref={messagesContainerRef} onScroll={handleScrollChat}>
 
+          {/* HU-09: spinner mientras se traen mensajes del servidor */}
+          {cargandoMas && (
+            <div className="msg-system history-top-indicator">
+              <span className="spinner-micro" /> Cargando mensajes anteriores...
+            </div>
+          )}
+
           {/* HU-09: indicador de historial disponible / inicio */}
-          {loadedCount < historialRef.current.length && (
+          {!cargandoMas && loadedCount < historialRef.current.length && (
             <div className="msg-system history-top-indicator">
               <ChevronsUp size={13} /> Sube para ver más ({historialRef.current.length - loadedCount} mensajes anteriores)
             </div>
           )}
-          {loadedCount > 0 && loadedCount >= historialRef.current.length && (
+          {!cargandoMas && loadedCount > 0 && loadedCount >= historialRef.current.length && !hasMore && (
             <div className="msg-system history-top-indicator">— Inicio del historial —</div>
+          )}
+          {!cargandoMas && loadedCount >= historialRef.current.length && hasMore && (
+            <div className="msg-system history-top-indicator">
+              <ChevronsUp size={13} /> Sube para cargar más mensajes
+            </div>
           )}
 
           {todosLosMensajes.length === 0 && (
@@ -634,6 +873,103 @@ export default function JoinChannelView({ profile, onVolver, codigoAutoJoin }) {
                 <button className="btn-danger" onClick={goBack}>
                   <LogOut size={15} /> Salir
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── HU-10: Modal de exportación de historial ─────────────────────── */}
+        {showExportModal && (
+          <div className="modal-overlay" onClick={() => setShowExportModal(false)}>
+            <div className="modal-box modal-export" onClick={(e) => e.stopPropagation()}>
+              <h2>Exportar Historial</h2>
+              <p className="modal-subtitle">
+                Canal <strong>#{canal.nombre}</strong> · Solo plan Pro · Máximo 500 mensajes
+              </p>
+
+              {/* Si el usuario es Free, mostramos el bloqueo antes de los controles */}
+              {profile.plan !== 'pro' ? (
+                <div className="export-locked-msg">
+                  <Lock size={32} strokeWidth={1.5} />
+                  <p>Esta función es exclusiva del <strong>plan Pro</strong>.</p>
+                  <p className="export-locked-sub">
+                    Actualiza tu cuenta para exportar el historial en TXT o PDF.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {/* Rango de fechas */}
+                  <div className="export-date-row">
+                    <div className="form-group">
+                      <label htmlFor="export-from">Desde</label>
+                      <input
+                        id="export-from"
+                        type="date"
+                        className="form-field"
+                        value={exportFrom}
+                        max={exportTo || new Date().toISOString().split('T')[0]}
+                        onChange={(e) => setExportFrom(e.target.value)}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label htmlFor="export-to">Hasta</label>
+                      <input
+                        id="export-to"
+                        type="date"
+                        className="form-field"
+                        value={exportTo}
+                        min={exportFrom}
+                        max={new Date().toISOString().split('T')[0]}
+                        onChange={(e) => setExportTo(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Selector de formato */}
+                  <div className="export-format-row">
+                    <span className="export-format-label">Formato:</span>
+                    <button
+                      type="button"
+                      className={`export-format-btn ${exportFormato === 'txt' ? 'active' : ''}`}
+                      onClick={() => setExportFormato('txt')}
+                    >
+                      TXT
+                    </button>
+                    <button
+                      type="button"
+                      className={`export-format-btn ${exportFormato === 'pdf' ? 'active' : ''}`}
+                      onClick={() => setExportFormato('pdf')}
+                    >
+                      PDF
+                    </button>
+                  </div>
+
+                  {/* Error si hay alguno */}
+                  {exportError && (
+                    <div className="error-banner" role="alert">
+                      <AlertTriangle size={14} />
+                      <span>{exportError}</span>
+                    </div>
+                  )}
+                </>
+              )}
+
+              <div className="modal-actions">
+                <button className="btn-secondary" onClick={() => setShowExportModal(false)}>
+                  {profile.plan !== 'pro' ? 'Cerrar' : 'Cancelar'}
+                </button>
+                {profile.plan === 'pro' && (
+                  <button
+                    className="btn-primary"
+                    onClick={handleExportarHistorial}
+                    disabled={exportCargando || !exportFrom || !exportTo}
+                  >
+                    {exportCargando
+                      ? <><span className="spinner" /> Generando...</>
+                      : <><Download size={15} /> Descargar {exportFormato.toUpperCase()}</>
+                    }
+                  </button>
+                )}
               </div>
             </div>
           </div>

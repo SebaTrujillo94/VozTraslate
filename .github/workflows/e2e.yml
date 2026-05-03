@@ -1,0 +1,105 @@
+name: Pruebas E2E (Cypress)
+
+# Corre automáticamente en cada push o PR al branch master
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+
+    # ── Base de datos PostgreSQL como servicio de Docker ──────────────────────
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: voztranslate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      # 1. Descargamos el código del repositorio
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      # 2. Node 18 LTS — compatible con Cypress (Node 22 no funciona con Cypress en Windows)
+      - name: Configurar Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      # 3. pnpm para el cliente (el proyecto usa pnpm)
+      - name: Instalar pnpm
+        run: npm install -g pnpm
+
+      # 4. Dependencias del backend
+      - name: Instalar dependencias del servidor
+        working-directory: server
+        run: npm install
+
+      # 5. Dependencias del frontend
+      - name: Instalar dependencias del cliente
+        working-directory: client
+        run: pnpm install
+
+      # 6. Dependencias de Cypress (ignora el postinstall que falla en Node 22)
+      - name: Instalar dependencias de Cypress
+        working-directory: e2e
+        run: npm install --ignore-scripts
+
+      # 7. Binario de Cypress (se descarga del caché de Cypress CDN)
+      - name: Instalar binario de Cypress
+        working-directory: e2e
+        run: npx cypress install
+
+      # 8. Arranca el backend en segundo plano
+      #    DATABASE_URL apunta al PostgreSQL del servicio Docker de arriba
+      #    JWT_SECRET puede ser cualquier string para los tests
+      #    GROQ_API_KEY solo se usa para voz — los tests E2E no usan esa función
+      - name: Iniciar backend (puerto 3001)
+        working-directory: server
+        run: node server.js &
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/voztranslate
+          JWT_SECRET: ${{ secrets.JWT_SECRET || 'ci_jwt_secret_para_tests' }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY || 'dummy_key_tests_no_usan_voz' }}
+          PORT: 3001
+
+      # 9. Arranca el frontend de Vite en segundo plano (puerto 5173)
+      - name: Iniciar frontend (puerto 5173)
+        working-directory: client
+        run: pnpm dev --host &
+
+      # 10. Espera a que ambos servidores estén listos antes de correr los tests
+      - name: Esperar a que los servidores estén listos
+        run: |
+          npx wait-on tcp:3001 --timeout 30000
+          npx wait-on tcp:5173 --timeout 30000
+
+      # 11. Corre todos los tests en modo headless (sin interfaz gráfica)
+      - name: Correr pruebas E2E con Cypress
+        working-directory: e2e
+        run: npx cypress run
+        env:
+          CYPRESS_baseUrl: http://localhost:5173
+
+      # 12. Si algún test falla, subimos los screenshots/videos para poder revisarlos
+      - name: Subir evidencia de fallos (screenshots y videos)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-evidencia-fallos
+          path: |
+            e2e/cypress/screenshots
+            e2e/cypress/videos
+          retention-days: 7

@@ -124,3 +124,50 @@ export async function getChannelHistory(canalCodigo) {
     timestamp:    row.timestamp,
   }));
 }
+
+// trae mensajes MÁS VIEJOS que un timestamp dado (para el scroll infinito)
+// el frontend manda el timestamp del mensaje más antiguo que ya tiene
+export async function getChannelHistoryBefore(canalCodigo, beforeTimestamp, limit = 20) {
+  const { rows } = await pool.query(
+    `SELECT * FROM (
+       SELECT * FROM messages
+       WHERE canal_codigo = $1 AND timestamp < $2
+       ORDER BY timestamp DESC LIMIT $3
+     ) sub ORDER BY timestamp ASC`,
+    [canalCodigo, beforeTimestamp, limit]
+  );
+  return rows.map(row => ({
+    idMensaje:    row.id_mensaje,
+    username:     row.username,
+    idioma:       row.idioma,
+    texto:        row.texto,
+    originalText: row.original_text,
+    translations: row.translations,
+    editado:      row.editado,
+    timestamp:    row.timestamp,
+  }));
+}
+
+// trae mensajes en un rango de fechas para exportar el historial (maximo 500)
+// solo para usuarios pro, el servidor verifica eso antes de llamar esta función
+export async function getMessagesForExport(canalCodigo, from, to) {
+  const { rows } = await pool.query(
+    `SELECT * FROM messages
+     WHERE canal_codigo = $1
+       AND timestamp >= $2
+       AND timestamp <= $3
+     ORDER BY timestamp ASC
+     LIMIT 500`,
+    [canalCodigo, from, to]
+  );
+  return rows.map(row => ({
+    idMensaje:    row.id_mensaje,
+    username:     row.username,
+    idioma:       row.idioma,
+    texto:        row.texto,
+    originalText: row.original_text,
+    translations: row.translations,
+    editado:      row.editado,
+    timestamp:    row.timestamp,
+  }));
+}

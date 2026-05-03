@@ -14,7 +14,7 @@ import dotenv from 'dotenv';
 import Groq from 'groq-sdk';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { pool, initDB, loadChannels, saveChannel, deleteChannel, saveMessage, updateMessage, getChannelHistory } from './db.js';
+import { pool, initDB, loadChannels, saveChannel, deleteChannel, saveMessage, updateMessage, getChannelHistory, getChannelHistoryBefore, getMessagesForExport } from './db.js';
 
 // Aquí cargamos nuestra llave secreta del archivo .env para que funcione la IA
 dotenv.config();
@@ -158,6 +158,105 @@ app.post('/api/auth/reset-password', async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// ── HU-09: Historial paginado (scroll infinito desde el servidor) ─────────────
+// El frontend llama a esto cuando ya agotó los 50 mensajes iniciales y el usuario
+// sigue subiendo. Devuelve los mensajes más viejos que `before`, filtrados por plan.
+app.get('/api/channels/:codigo/history', authMiddleware, async (req, res) => {
+  const { codigo } = req.params;
+  const { before, limit = '20' } = req.query;
+
+  try {
+    // necesitamos el plan del usuario para saber cuánto historial puede ver
+    const { rows: userRows } = await pool.query(
+      'SELECT plan FROM users WHERE id = $1', [req.user.id]
+    );
+    if (!userRows[0]) return res.status(404).json({ error: 'Usuario no encontrado' });
+
+    const plan   = userRows[0].plan;
+    const planMs = plan === 'pro'
+      ? 30 * 24 * 60 * 60 * 1000
+      :      24 * 60 * 60 * 1000;
+    const minDate = new Date(Date.now() - planMs).toISOString();
+
+    // si no hay `before` traemos los últimos N; si hay, traemos los anteriores a esa fecha
+    let mensajes;
+    const lim = Math.min(parseInt(limit) || 20, 50); // tope de seguridad
+
+    if (before) {
+      // verificamos que `before` no sea más viejo que el límite del plan
+      const beforeFinal = new Date(before) > new Date(minDate) ? before : null;
+      if (!beforeFinal) {
+        return res.json({ messages: [], hasMore: false });
+      }
+      mensajes = await getChannelHistoryBefore(codigo, beforeFinal, lim);
+      // filtramos por plan por si acaso (el query ya lo hace pero mejor doble check)
+      mensajes = mensajes.filter(m => new Date(m.timestamp) >= new Date(minDate));
+    } else {
+      return res.json({ messages: [], hasMore: false });
+    }
+
+    // le decimos al cliente si puede seguir cargando más
+    const hasMore = mensajes.length >= lim;
+
+    res.json({
+      messages: mensajes.map(m => ({
+        ...m,
+        tipo:         m.translations ? 'mensaje-traducido' : 'mensaje',
+        originalLang: m.idioma,
+      })),
+      hasMore,
+    });
+  } catch (e) {
+    console.error('Error en GET /history:', e.message);
+    res.status(500).json({ error: 'Error al cargar historial' });
+  }
+});
+
+// ── HU-10: Exportar historial del canal (solo plan Pro) ───────────────────────
+// Devuelve hasta 500 mensajes en el rango de fechas pedido.
+// El cliente con esto genera el TXT o abre una ventana de impresión para PDF.
+app.get('/api/channels/:codigo/export', authMiddleware, async (req, res) => {
+  const { codigo } = req.params;
+  const { from, to } = req.query;
+
+  if (!from || !to) {
+    return res.status(400).json({ error: 'Se requieren los parámetros from y to (fechas)' });
+  }
+
+  try {
+    // verificamos plan Pro
+    const { rows: userRows } = await pool.query(
+      'SELECT plan FROM users WHERE id = $1', [req.user.id]
+    );
+    if (!userRows[0]) return res.status(404).json({ error: 'Usuario no encontrado' });
+    if (userRows[0].plan !== 'pro') {
+      return res.status(403).json({ error: 'Esta función es exclusiva del plan Pro' });
+    }
+
+    // verificamos que el canal existe para tener el nombre en la exportación
+    const { rows: canalRows } = await pool.query(
+      'SELECT nombre FROM channels WHERE codigo = $1', [codigo]
+    );
+    if (!canalRows[0]) return res.status(404).json({ error: 'Canal no encontrado' });
+
+    // to + 'T23:59:59.999Z' para incluir todos los mensajes del día final
+    const fromISO = new Date(from).toISOString();
+    const toISO   = new Date(to + 'T23:59:59.999').toISOString();
+
+    const mensajes = await getMessagesForExport(codigo, fromISO, toISO);
+
+    res.json({
+      messages:     mensajes,
+      canalNombre:  canalRows[0].nombre,
+      codigo,
+      totalMensajes: mensajes.length,
+    });
+  } catch (e) {
+    console.error('Error en GET /export:', e.message);
+    res.status(500).json({ error: 'Error al exportar historial' });
   }
 });
 

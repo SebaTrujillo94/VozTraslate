@@ -1,0 +1,12 @@
+{
+  "name": "voztranslate-e2e",
+  "version": "1.0.0",
+  "description": "Pruebas E2E con Cypress para VozTraslate",
+  "scripts": {
+    "test": "cypress run",
+    "test:open": "cypress open"
+  },
+  "devDependencies": {
+    "cypress": "^14.0.0"
+  }
+}

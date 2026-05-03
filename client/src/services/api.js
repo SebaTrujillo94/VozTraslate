@@ -73,3 +73,18 @@ export async function resetPassword({ email, newPassword }) {
 export function logout() {
   clearToken();
 }
+
+// ── HU-09: carga más mensajes viejos para el scroll infinito ──────────────────
+// `before` es el timestamp del mensaje más viejo que ya tenemos en pantalla
+export async function fetchChannelHistory(codigo, { before, limit = 20 }) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (before) params.set('before', before);
+  return request(`/api/channels/${codigo}/history?${params.toString()}`);
+}
+
+// ── HU-10: pide al servidor los mensajes en un rango de fechas para exportar ──
+// Solo funciona para usuarios Pro, el servidor devuelve 403 si no lo son
+export async function exportChannelHistory(codigo, { from, to }) {
+  const params = new URLSearchParams({ from, to });
+  return request(`/api/channels/${codigo}/export?${params.toString()}`);
+}
