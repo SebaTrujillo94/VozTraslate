@@ -41,12 +41,12 @@ describe('Dashboard de Canales', () => {
   // ── Test 6: La sección de canales privados con botón de crear ─────────────
   it('muestra la opción para crear un canal privado', () => {
     // debe existir el botón/slot para crear un canal nuevo
-    cy.contains('Crear').should('be.visible');
+    cy.contains('Nuevo canal').should('be.visible');
   });
 
   // ── Test 7: Hacer clic en el Canal General lleva al chat ──────────────────
   it('navega al chat al hacer clic en el Canal General', () => {
-    cy.get('.channel-card.public').click();
+    cy.get('.channel-card.public:not(.skeleton)', { timeout: 10000 }).should('be.visible').click();
 
     // esperamos que aparezca la vista del chat (puede tardar por Socket.io)
     cy.get('.channel-chat-view', { timeout: 15000 }).should('be.visible');

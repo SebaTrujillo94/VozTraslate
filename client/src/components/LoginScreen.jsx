@@ -458,7 +458,7 @@ export default function LoginScreen({ onLogin }) {
               id="register-next"
               type="submit"
               className="login-submit"
-              disabled={!email.trim() || !password || !confirmPassword || !username.trim()}
+              disabled={!email.trim() || !password || !confirmPassword || !username.trim() || password !== confirmPassword}
             >
               Continuar <span className="login-arrow">→</span>
             </button>

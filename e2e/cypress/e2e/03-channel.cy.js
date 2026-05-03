@@ -8,6 +8,12 @@ describe('Vista del Canal de Chat', () => {
   beforeEach(() => {
     cy.loginConRegistro('canal');
     cy.unirseAlCanalPublico();
+    // cerrar cualquier modal que haya quedado abierto (por animaciones o estado previo)
+    cy.get('body').then(($body) => {
+      if ($body.find('.modal-overlay').length) {
+        cy.get('.modal-overlay').first().click({ force: true });
+      }
+    });
   });
 
   // ── Test 1: La barra superior muestra el nombre del canal ─────────────────
@@ -81,7 +87,8 @@ describe('Vista del Canal de Chat', () => {
 
   // ── Test 8: El botón de Salir abre el modal de confirmación ───────────────
   it('muestra modal de confirmación al hacer clic en Salir', () => {
-    cy.get('.btn-back').click();
+    // force:true porque la animación de entrada del canal puede tener overlay transitorio
+    cy.get('.btn-back').click({ force: true });
 
     // debe aparecer el modal con pregunta de confirmación
     cy.get('.exit-confirm-box').should('be.visible');
@@ -93,7 +100,7 @@ describe('Vista del Canal de Chat', () => {
 
   // ── Test 9: Cancelar salida mantiene al usuario en el canal ───────────────
   it('cancela la salida y sigue en el canal al hacer clic en Cancelar', () => {
-    cy.get('.btn-back').click();
+    cy.get('.btn-back').click({ force: true });
     cy.get('.exit-confirm-box').should('be.visible');
 
     // cancelamos
@@ -106,7 +113,7 @@ describe('Vista del Canal de Chat', () => {
 
   // ── Test 10: Confirmar salida vuelve al dashboard ─────────────────────────
   it('vuelve al dashboard al confirmar la salida del canal', () => {
-    cy.get('.btn-back').click();
+    cy.get('.btn-back').click({ force: true });
     cy.get('.exit-confirm-box').should('be.visible');
 
     // confirmamos la salida
@@ -131,7 +138,7 @@ describe('Vista del Canal de Chat', () => {
   // ── Test 12: Código inválido en el formulario de unirse muestra error ──────
   it('muestra error de validación con un código malformado', () => {
     // primero volvemos al dashboard para ir a la vista de código manual
-    cy.get('.btn-back').click();
+    cy.get('.btn-back').click({ force: true });
     cy.contains('Salir').last().click();
 
     // abrimos el formulario de código manual

@@ -106,8 +106,8 @@ Cypress.Commands.add('loginComoProSimulado', (sufijo = '') => {
 // Hace clic en el Canal General desde el dashboard y espera el chat
 // Precondición: ya hay que estar en el dashboard (usar loginConRegistro antes)
 Cypress.Commands.add('unirseAlCanalPublico', () => {
-  // el canal público siempre tiene esta card visible en el dashboard
-  cy.get('.channel-card.public').click();
+  // esperamos a que la card sea la real (no el skeleton de carga)
+  cy.get('.channel-card.public:not(.skeleton)', { timeout: 10000 }).should('be.visible').click();
 
   // esperamos que aparezca la vista de chat (puede tardar por Socket.io)
   cy.get('.channel-chat-view', { timeout: 15000 }).should('be.visible');
