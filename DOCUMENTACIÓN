@@ -1,0 +1,855 @@
+# DOCUMENTACIÓN TÉCNICA — VozTranslate
+
+> **Proyecto:** VozTranslate — Plataforma de chat multilingüe con traducción y transcripción de voz en tiempo real  
+> **Equipo:** Sebastian Trujillo & Jorge Uribe
+> **Institución:** DUOC UC - Sede Campus Virtual
+> **Fecha:** 03 Mayo 2026
+
+---
+
+## Tabla de Contenidos
+
+1. [Resumen del Sistema](#1-resumen-del-sistema)
+2. [Estructura de la Base de Datos](#2-estructura-de-la-base-de-datos)
+3. [Interfaz de Usuario](#3-interfaz-de-usuario)
+4. [Configuración del Entorno y Stack Tecnológico](#4-configuración-del-entorno-y-stack-tecnológico)
+5. [Implementación del CRUD](#5-implementación-del-crud)
+6. [Métricas y Análisis de Datos](#6-métricas-y-análisis-de-datos)
+7. [Herramientas de Análisis](#7-herramientas-de-análisis)
+8. [Instalación y Uso del Sistema](#8-instalación-y-uso-del-sistema)
+9. [Resumen Técnico para Presentación](#9-resumen-técnico-para-presentación)
+10. [Actualizaciones Recientes (Versión Pro, Historial y Testing)](#10-actualizaciones-recientes-versión-pro-historial-y-testing)
+
+---
+
+## 1. Resumen del Sistema
+
+VozTranslate es una aplicación web de chat en tiempo real que permite a múltiples usuarios comunicarse en distintos idiomas, traduciendo automáticamente los mensajes de cada participante a su idioma preferido. Además, soporta mensajes de voz que son transcritos y traducidos al vuelo mediante modelos de inteligencia artificial.
+
+Esta plataforma busca romper barreras idiomáticas permitiendo una comunicación fluida y natural entre personas que hablan diferentes lenguas, todo ello integrado en una interfaz intuitiva y moderna.
+
+El sistema fue diseñado con un enfoque en la experiencia de usuario, la seguridad en la autenticación y la eficiencia en las operaciones de base de datos. Está compuesto por un cliente React (frontend), un servidor Node.js con Express y Socket.io (backend) y una base de datos PostgreSQL.
+
+### Flujo general de la aplicación
+
+```
+Usuario A (habla español)        Usuario B (habla inglés)
+        |                                  |
+        |  Envía mensaje / audio           |
+        v                                  |
+   [ Cliente React ]                       |
+        |                                  |
+        | Socket.io (WebSocket)            |
+        v                                  |
+   [ Servidor Node.js ]                    |
+        |                                  |
+        | Consulta Groq API                |
+        v                                  |
+   [ LLaMA 3.3-70B / Whisper ]             |
+        |                                  |
+        | Traduce a todos los idiomas      |
+        v                                  |
+   [ PostgreSQL ] <-- guarda mensaje       |
+        |                                  |
+        | Emite a la sala (Socket.io)      |
+        v                                  v
+  Usuario A recibe en ES     Usuario B recibe en EN
+```
+
+---
+
+## 2. Estructura de la Base de Datos
+
+### 2.1 Tipo de Base de Datos
+
+VozTranslate utiliza una base de datos **relacional** — específicamente **PostgreSQL**. Se eligió este motor porque:
+
+- Permite definir restricciones de integridad referencial (`FOREIGN KEY`, `UNIQUE`, `NOT NULL`).
+- Soporta el tipo de dato `JSONB`, utilizado para almacenar traducciones de mensajes de forma eficiente.
+- Es ampliamente adoptado en la industria y tiene soporte nativo en servicios cloud (Render, Railway, Supabase).
+
+### 2.2 Modelo de Datos (Diagrama Entidad-Relación)
+
+```
+┌──────────────────────┐        ┌──────────────────────────────────┐
+│        users         │        │            channels              │
+├──────────────────────┤        ├──────────────────────────────────┤
+│ id          SERIAL PK│        │ id          SERIAL PK            │
+│ email       TEXT UQ  │        │ codigo      TEXT UQ  NOT NULL    │
+│ username    TEXT UQ  │        │ nombre      TEXT NOT NULL        │
+│ password    TEXT     │        │ creador     TEXT                 │
+│ display_name TEXT    │        │ idioma      TEXT DEFAULT 'es'    │
+│ language    TEXT     │        │ tipo        TEXT DEFAULT 'private'│
+│ avatar_url  TEXT     │        │ permanente  BOOLEAN              │
+│ plan        TEXT     │        │ created_at  TIMESTAMPTZ          │
+│ words_used  INT      │        └──────────────┬───────────────────┘
+│ created_at  TIMESTAMPTZ│                     │ 1
+└──────────────────────┘                       │
+                                               │ N
+                               ┌───────────────▼──────────────────┐
+                               │            messages              │
+                               ├──────────────────────────────────┤
+                               │ id           SERIAL PK           │
+                               │ id_mensaje   TEXT NOT NULL       │
+                               │ canal_codigo TEXT  FK → channels │
+                               │ username     TEXT NOT NULL       │
+                               │ idioma       TEXT                │
+                               │ texto        TEXT NOT NULL       │
+                               │ original_text TEXT               │
+                               │ translations JSONB               │
+                               │ editado      BOOLEAN             │
+                               │ timestamp    TIMESTAMPTZ         │
+                               └──────────────────────────────────┘
+```
+
+### 2.3 Descripción de Tablas
+
+#### Tabla `users` — Gestión de usuarios
+
+| Columna | Tipo | Restricción | Descripción |
+|---|---|---|---|
+| `id` | SERIAL | PRIMARY KEY | Identificador autoincremental |
+| `email` | TEXT | UNIQUE, NOT NULL | Correo electrónico del usuario |
+| `username` | TEXT | UNIQUE, NOT NULL | Nombre de usuario único |
+| `password` | TEXT | NOT NULL | Hash bcrypt (10 rondas de sal) |
+| `display_name` | TEXT | NOT NULL | Nombre visible en el chat |
+| `language` | TEXT | DEFAULT 'en' | Idioma preferido ('es', 'en', 'fr', etc.) |
+| `avatar_url` | TEXT | — | URL del avatar (opcional) |
+| `plan` | TEXT | DEFAULT 'free' | Plan de suscripción ('free' o 'pro') |
+| `words_used` | INT | DEFAULT 0 | Palabras consumidas en el mes actual |
+| `created_at` | TIMESTAMPTZ | DEFAULT NOW() | Fecha de registro |
+
+#### Tabla `channels` — Gestión de canales de chat
+
+| Columna | Tipo | Restricción | Descripción |
+|---|---|---|---|
+| `id` | SERIAL | PRIMARY KEY | Identificador autoincremental |
+| `codigo` | TEXT | UNIQUE, NOT NULL | Código de invitación (ej: ABC-1234) |
+| `nombre` | TEXT | NOT NULL | Nombre del canal |
+| `creador` | TEXT | — | Username del creador |
+| `idioma` | TEXT | DEFAULT 'es' | Idioma principal del canal |
+| `tipo` | TEXT | DEFAULT 'private' | Tipo: 'public' o 'private' |
+| `permanente` | BOOLEAN | DEFAULT FALSE | Si es un canal del sistema (no eliminable) |
+| `created_at` | TIMESTAMPTZ | DEFAULT NOW() | Fecha de creación |
+
+#### Tabla `messages` — Historial de mensajes
+
+| Columna | Tipo | Restricción | Descripción |
+|---|---|---|---|
+| `id` | SERIAL | PRIMARY KEY | Identificador autoincremental |
+| `id_mensaje` | TEXT | NOT NULL | ID único generado por el cliente (7 caracteres) |
+| `canal_codigo` | TEXT | FK → channels(codigo) | Canal al que pertenece |
+| `username` | TEXT | NOT NULL | Autor del mensaje |
+| `idioma` | TEXT | — | Idioma original del mensaje |
+| `texto` | TEXT | NOT NULL | Texto final (puede ser traducido) |
+| `original_text` | TEXT | — | Texto original antes de edición |
+| `translations` | JSONB | — | JSON con todas las traducciones: `{"es": "...", "en": "..."}` |
+| `editado` | BOOLEAN | DEFAULT FALSE | Indica si el mensaje fue editado |
+| `timestamp` | TIMESTAMPTZ | DEFAULT NOW() | Fecha y hora del mensaje |
+
+### 2.4 Script de Inicialización
+
+```sql
+-- Tabla de usuarios
+CREATE TABLE IF NOT EXISTS users (
+  id           SERIAL PRIMARY KEY,
+  email        TEXT UNIQUE NOT NULL,
+  username     TEXT UNIQUE NOT NULL,
+  password     TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  language     TEXT DEFAULT 'en',
+  avatar_url   TEXT,
+  plan         TEXT DEFAULT 'free',
+  words_used   INT  DEFAULT 0,
+  created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Tabla de canales
+CREATE TABLE IF NOT EXISTS channels (
+  id         SERIAL PRIMARY KEY,
+  codigo     TEXT UNIQUE NOT NULL,
+  nombre     TEXT NOT NULL,
+  creador    TEXT NOT NULL,
+  idioma     TEXT DEFAULT 'es',
+  tipo       TEXT DEFAULT 'private',
+  permanente BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Canal general (permanente, del sistema)
+INSERT INTO channels (codigo, nombre, creador, tipo, permanente)
+VALUES ('GENERAL', 'Canal General', 'system', 'public', TRUE)
+ON CONFLICT DO NOTHING;
+
+-- Tabla de mensajes
+CREATE TABLE IF NOT EXISTS messages (
+  id            SERIAL PRIMARY KEY,
+  id_mensaje    TEXT NOT NULL,
+  canal_codigo  TEXT REFERENCES channels(codigo) ON DELETE CASCADE,
+  username      TEXT NOT NULL,
+  idioma        TEXT DEFAULT 'en',
+  texto         TEXT NOT NULL,
+  original_text TEXT,
+  translations  JSONB,
+  editado       BOOLEAN DEFAULT FALSE,
+  timestamp     TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_canal ON messages(canal_codigo);
+CREATE INDEX IF NOT EXISTS idx_messages_ts    ON messages(timestamp DESC);
+```
+
+---
+
+## 3. Interfaz de Usuario
+
+### 3.1 Vista de Autenticación (`LoginScreen.jsx`)
+
+La pantalla inicial gestiona el acceso al sistema. Incluye tres flujos diferenciados:
+
+**Login**
+- Formulario de email y contraseña con validación en tiempo real.
+- Contador de intentos fallidos: bloqueo temporal progresivo (hasta 30 minutos tras 5 intentos).
+- Visibilidad de contraseña con toggle.
+
+**Registro** (2 pasos)
+- *Paso 1:* Email, nombre de usuario, contraseña (mínimo 8 caracteres, 1 mayúscula, 1 número), confirmación.
+- *Paso 2:* Nombre visible, idioma preferido (ES/EN), selección de plan (Free / Pro).
+- Indicador de fortaleza de contraseña.
+
+**Recuperación de contraseña**
+- Verificación de email registrado.
+- Formulario de nueva contraseña con confirmación.
+
+**Diseño**: Pantalla dividida — formulario a la izquierda, panel decorativo a la derecha con carrusel de frases (rotación cada 15 segundos). Fondo con gradientes animados.
+
+### 3.2 Panel de Canales (`ChannelDashboard.jsx`)
+
+Primera pantalla tras el login. Muestra:
+
+- Saludo personalizado con el nombre del usuario y su avatar.
+- **Canal General**: canal público permanente, siempre disponible.
+- **Canales privados del usuario**: hasta 2 canales propios creados por el usuario.
+- Botón para **crear un nuevo canal privado** (abre un modal).
+- Campo de **unirse por código** (formato `ABC-1234`).
+- Banner de estadísticas: total de canales activos en la plataforma.
+- Botones de editar perfil y cerrar sesión.
+
+### 3.3 Vista de Chat (`JoinChannelView.jsx`)
+
+Pantalla principal de comunicación. Está dividida en tres zonas:
+
+**Zona superior (Header)**
+- Nombre del canal y código de invitación.
+- Indicador de número de miembros conectados.
+- Contador de palabras restantes (plan gratuito).
+- Toggle de sonido de notificaciones.
+- Botón de salir del canal.
+
+**Zona central (Lista de mensajes)**
+- Mensajes con avatar, nombre del autor, hora e idioma (bandera emoji).
+- Indicador `(editado)` en mensajes modificados.
+- Spinner de procesamiento mientras se traduce/transcribe.
+- Notificaciones de sistema (usuario entró/salió).
+- Botón "Nuevo mensaje" cuando se scrollea hacia arriba.
+- Carga de historial paginada (50 mensajes por lote al scrollear arriba).
+
+**Zona inferior (Barra de entrada)**
+- Campo de texto con validación de límite de palabras.
+- Indicador "escribiendo…" en tiempo real.
+- Botón de micrófono (mantener presionado para grabar audio).
+- Botón de envío con Enter o clic.
+
+**Barra lateral (Lista de miembros)**
+- Muestra todos los usuarios conectados al canal.
+- Cada usuario tiene su bandera de idioma preferido.
+- Punto verde de estado activo.
+
+### 3.4 Modales Secundarios
+
+**`CreateChannelModal.jsx`** — Crear canal privado
+- Campo de nombre del canal.
+- Selector de idioma principal.
+- Pantalla de confirmación con código generado y botón de copiar al portapapeles.
+
+**`EditProfileModal.jsx`** — Editar perfil
+- Campo de nombre visible.
+- Selector de idioma preferido (ES/EN).
+- Información del plan actual (Pro bloqueado para usuarios gratuitos).
+
+### 3.5 Sistema de Temas
+
+La interfaz soporta **modo oscuro y modo claro** configurado mediante variables CSS y el atributo `data-theme` en el elemento raíz del DOM. El tema se persiste en `localStorage`.
+
+---
+
+## 4. Configuración del Entorno y Stack Tecnológico
+
+### 4.1 Diagrama de Arquitectura
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         CLIENTE (Puerto 5173)                   │
+│                                                                 │
+│  React 18 + Vite 5                                              │
+│  ┌────────────┐  ┌──────────────────┐  ┌──────────────────────┐ │
+│  │LoginScreen │  │ChannelDashboard  │  │  JoinChannelView     │ │
+│  └────────────┘  └──────────────────┘  └──────────────────────┘ │
+│       │                │                         │              │
+│  services/api.js   services/api.js      services/socket.js      │
+│  (fetch REST)      (fetch REST)         (WebSocket)             │
+└─────────────────────────┬────────────────────────┬──────────────┘
+                          │ HTTP REST              │ WebSocket
+                          │                        │
+┌─────────────────────────▼────────────────────────▼──────────────┐
+│                    SERVIDOR (Puerto 3001)                       │
+│                                                                 │
+│  Node.js + Express 4 + Socket.io 4                              │
+│                                                                 │
+│  ┌─────────────────────┐   ┌────────────────────────────────┐   │
+│  │  REST API (/api/*)  │   │       Socket.io Rooms          │   │
+│  │  - /auth/register   │   │  - send-message                │   │
+│  │  - /auth/login      │   │  - voice-audio                 │   │
+│  │  - /auth/me         │   │  - join-channel-by-code        │   │
+│  │  - /auth/profile    │   │  - typing / edit-message       │   │
+│  └─────────────────────┘   └────────────────────────────────┘   │
+│           │                              │                      │
+│           ▼                              ▼                      │
+│  ┌────────────────┐           ┌─────────────────────┐           │
+│  │    db.js       │           │  Groq SDK (AI)       │          │
+│  │  PostgreSQL    │           │  - LLaMA 3.3-70B     │          │
+│  │  (pg driver)   │           │  - Whisper L-V3-Turbo│          │
+│  └────────────────┘           └─────────────────────┘           │
+└─────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────┐
+│   PostgreSQL DB     │
+│  - users            │
+│  - channels         │
+│  - messages         │
+└─────────────────────┘
+```
+
+### 4.2 Tecnologías del Frontend
+
+| Tecnología | Versión | Rol |
+|---|---|---|
+| **React** | 18.3.1 | Librería UI basada en componentes |
+| **Vite** | 5.4.14 | Bundler y servidor de desarrollo |
+| **Socket.io-client** | 4.7.5 | Comunicación WebSocket con el servidor |
+| **Lucide React** | 1.11.0 | Iconografía SVG |
+| **CSS Variables** | nativo | Sistema de diseño (temas, colores, espaciados) |
+
+### 4.3 Tecnologías del Backend
+
+| Tecnología | Versión | Rol |
+|---|---|---|
+| **Node.js** | ≥ 18 | Runtime de JavaScript en servidor |
+| **Express** | 4.18.2 | Framework web para la API REST |
+| **Socket.io** | 4.7.4 | Comunicación bidireccional en tiempo real |
+| **pg (node-postgres)** | — | Driver para conectar con PostgreSQL |
+| **Sequelize** | 6.37.8 | ORM (instalado, reemplazado por consultas raw) |
+| **bcryptjs** | 3.0.3 | Hash seguro de contraseñas |
+| **jsonwebtoken** | 9.0.3 | Generación y verificación de tokens JWT |
+| **Groq SDK** | 1.1.1 | Integración con modelos IA de Groq |
+| **dotenv** | 17.3.1 | Gestión de variables de entorno |
+| **CORS** | 2.8.5 | Habilitación de peticiones cross-origin |
+
+### 4.4 Base de Datos
+
+| Tecnología | Versión | Rol |
+|---|---|---|
+| **PostgreSQL** | 14+ | Motor de base de datos relacional |
+
+### 4.5 Servicios Externos
+
+| Servicio | Modelo | Uso |
+|---|---|---|
+| **Groq API** | LLaMA 3.3-70B | Traducción de texto entre idiomas |
+| **Groq API** | Whisper-Large-V3-Turbo | Transcripción de audio a texto |
+
+### 4.6 Variables de Entorno (`server/.env`)
+
+```env
+# Conexión a la base de datos PostgreSQL
+DATABASE_URL=postgresql://postgres:PASSWORD@localhost:5432/voztranslate
+
+# Clave secreta para firmar y verificar tokens JWT
+JWT_SECRET=voztranslate_secret_super_seguro_2024
+
+# Clave de API para los modelos de Groq (traducción y transcripción)
+GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+> **Importante:** El archivo `.env` nunca debe subirse al repositorio. Debe incluirse en `.gitignore`.
+
+---
+
+## 5. Implementación del CRUD
+
+El sistema implementa operaciones CRUD completas sobre las tres entidades principales. A continuación se detalla cada operación, su endpoint o evento, y las medidas de seguridad asociadas.
+
+### 5.1 CRUD de Usuarios
+
+| Operación | Endpoint | Descripción | Seguridad |
+|---|---|---|---|
+| **Crear** | `POST /api/auth/register` | Registra un nuevo usuario | Validación de campos; `UNIQUE` en email y username; contraseña hasheada con bcrypt |
+| **Leer** | `GET /api/auth/me` | Obtiene el perfil del usuario autenticado | Requiere token JWT válido en header `Authorization: Bearer` |
+| **Actualizar** | `PUT /api/auth/profile` | Actualiza nombre visible e idioma preferido | Requiere token JWT; solo el propio usuario puede modificar su perfil |
+| **Eliminar** | No implementado (v1) | — | — |
+
+**Flujo de registro:**
+```
+Cliente → POST /api/auth/register { email, username, password, display_name, language, plan }
+         ↓
+Servidor → validar campos → bcrypt.hash(password, 10) → INSERT INTO users → generar JWT
+         ↓
+Cliente ← { token, user: { id, username, display_name, language, plan } }
+```
+
+**Flujo de login:**
+```
+Cliente → POST /api/auth/login { email, password }
+         ↓
+Servidor → SELECT user WHERE email → bcrypt.compare(password, hash) → generar JWT
+         ↓
+Cliente ← { token, user: { ... } }
+```
+
+### 5.2 CRUD de Canales
+
+| Operación | Evento Socket / Endpoint | Descripción | Seguridad |
+|---|---|---|---|
+| **Crear** | Socket `create-channel` | Crea un canal privado nuevo | Usuario debe estar autenticado; máximo 2 canales por usuario |
+| **Leer** | Socket `get-stats` | Lista todos los canales disponibles | Disponible para usuarios autenticados |
+| **Actualizar** | No implementado (v1) | — | — |
+| **Eliminar** | Socket `delete-channel` | Elimina un canal y sus mensajes | Solo el `creador` del canal puede eliminarlo; `ON DELETE CASCADE` elimina mensajes asociados |
+
+**Generación de código de canal:**
+```javascript
+// Formato: 3 letras aleatorias + guión + 4 dígitos
+const letras = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const codigo = Array.from({length: 3}, () => letras[Math.floor(Math.random() * 26)]).join('')
+             + '-'
+             + Math.floor(1000 + Math.random() * 9000);
+```
+
+### 5.3 CRUD de Mensajes
+
+| Operación | Evento Socket | Descripción | Seguridad |
+|---|---|---|---|
+| **Crear** | `send-message` / `voice-audio` | Envía un mensaje de texto o de voz | Rate limiting: 1 mensaje/segundo por usuario; verificación de límite de palabras (plan free) |
+| **Leer** | `join-channel-by-code` | Carga el historial del canal (paginado, 50 por lote) | Usuario debe estar en la sala (Socket.io room) |
+| **Actualizar** | `edit-message` | Edita un mensaje existente y re-traduce | Solo el autor puede editar sus propios mensajes |
+| **Eliminar** | — (por cascada al eliminar canal) | Se eliminan automáticamente con el canal | Integridad referencial con `ON DELETE CASCADE` |
+
+**Flujo de creación de mensaje con traducción:**
+```
+1. Cliente emite 'send-message' { text, channelCode, username, language }
+2. Servidor aplica rate limiting (1 msg/seg por usuario)
+3. Servidor obtiene idiomas de todos los usuarios conectados al canal
+4. Promise.all([translate(text, 'en'), translate(text, 'es'), ...])  ← paralelo
+5. Cachea cada traducción en LRU cache (clave: "texto:from:to", máx 500 entradas)
+6. INSERT INTO messages (translations = JSONB con todas las traducciones)
+7. Emite 'translated-message' a toda la sala con el objeto de traducciones
+8. Cada cliente renderiza la traducción en su idioma preferido
+```
+
+**Seguridad en las operaciones:**
+
+- **Inyección SQL**: Se utilizan consultas parametrizadas en todos los casos (`$1, $2, ...` con el driver `pg`), lo que elimina el riesgo de SQL Injection.
+- **Autenticación**: Las rutas REST requieren un JWT válido verificado con `jwt.verify()`. Los eventos Socket.io verifican la identidad del usuario mediante el token enviado en el handshake.
+- **Autorización**: Las operaciones de eliminación y edición verifican que el usuario que solicita la acción sea el propietario del recurso.
+- **Rate Limiting**: Se controla la frecuencia de mensajes por usuario (máximo 1 por segundo) para evitar spam o abuso del servicio de traducción.
+- **Límite de palabras**: Los usuarios del plan gratuito tienen un límite de 1000 palabras mensuales, controlado en base de datos con la columna `words_used`.
+
+---
+
+## 6. Métricas y Análisis de Datos
+
+### 6.1 Métricas de Uso del Sistema
+
+Las siguientes métricas pueden extraerse directamente de la base de datos PostgreSQL:
+
+| Métrica | Consulta Base | Relevancia |
+|---|---|---|
+| Total de usuarios registrados | `SELECT COUNT(*) FROM users` | Adopción de la plataforma |
+| Usuarios por plan | `SELECT plan, COUNT(*) FROM users GROUP BY plan` | Conversión free → pro |
+| Mensajes por canal | `SELECT canal_codigo, COUNT(*) FROM messages GROUP BY canal_codigo` | Canales más activos |
+| Mensajes por hora/día | `SELECT DATE_TRUNC('hour', timestamp), COUNT(*) FROM messages GROUP BY 1` | Patrones de uso |
+| Idiomas más usados | `SELECT idioma, COUNT(*) FROM messages GROUP BY idioma ORDER BY 2 DESC` | Demanda por idioma |
+| Consumo de palabras por usuario | `SELECT username, words_used FROM users ORDER BY words_used DESC` | Usuarios más activos |
+| Canales creados por mes | `SELECT DATE_TRUNC('month', created_at), COUNT(*) FROM channels GROUP BY 1` | Crecimiento de la plataforma |
+| Mensajes editados | `SELECT COUNT(*) FROM messages WHERE editado = TRUE` | Calidad del servicio de traducción |
+
+### 6.2 Métricas de Desempeño de Traducción
+
+Estas métricas son relevantes para evaluar la calidad del servicio de IA:
+
+| Métrica | Descripción | Cómo medirla |
+|---|---|---|
+| Tasa de cache hit | Porcentaje de traducciones servidas desde caché | Contador en el servidor (`cacheHits / totalRequests`) |
+| Latencia de traducción | Tiempo promedio de respuesta de Groq API | `Date.now()` antes y después de `groq.chat.completions.create()` |
+| Tasa de error de Groq | Porcentaje de llamadas a la API que fallan | Log de errores en el retry handler |
+| Tasa de éxito en transcripción de voz | Mensajes de voz exitosos vs. fallidos | Contadores de eventos `voice-audio` y `voice-error` |
+| Mensajes por idioma par (from→to) | Qué pares de idiomas se traducen más | Análisis del campo `translations` en `JSONB` |
+
+### 6.3 Métricas de Negocio
+
+| Métrica | Descripción |
+|---|---|
+| Tasa de activación | Usuarios que crearon al menos un canal o enviaron un mensaje |
+| Retención | Usuarios que vuelven a la plataforma en días subsiguientes |
+| Límite de palabras alcanzado | Usuarios free que llegaron a 0 palabras (candidatos a upgrade) |
+| Mensajes de voz vs. texto | Proporción de uso de cada modalidad |
+
+---
+
+## 7. Herramientas de Análisis
+
+### 7.1 Consultas Directas en PostgreSQL
+
+Para análisis ad-hoc o dashboards operacionales, PostgreSQL provee suficiente capacidad:
+
+```sql
+-- Top 5 canales con más actividad en los últimos 7 días
+SELECT m.canal_codigo, c.nombre, COUNT(*) AS total_mensajes
+FROM messages m
+JOIN channels c ON c.codigo = m.canal_codigo
+WHERE m.timestamp >= NOW() - INTERVAL '7 days'
+GROUP BY m.canal_codigo, c.nombre
+ORDER BY total_mensajes DESC
+LIMIT 5;
+
+-- Distribución de idiomas de usuarios
+SELECT language, COUNT(*) AS cantidad, 
+       ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) AS porcentaje
+FROM users
+GROUP BY language
+ORDER BY cantidad DESC;
+
+-- Usuarios del plan free que han usado más del 80% de sus palabras
+SELECT username, words_used, 
+       ROUND(words_used * 100.0 / 1000, 1) AS porcentaje_usado
+FROM users
+WHERE plan = 'free' AND words_used >= 800
+ORDER BY words_used DESC;
+```
+
+### 7.2 Python + Pandas (Análisis Offline)
+
+Para análisis más profundos fuera del entorno de producción:
+
+```python
+import pandas as pd
+import psycopg2
+import matplotlib.pyplot as plt
+from sqlalchemy import create_engine
+
+engine = create_engine("postgresql://postgres:PASSWORD@localhost/voztranslate")
+
+# Carga de datos
+df_messages = pd.read_sql("SELECT * FROM messages", engine)
+df_users = pd.read_sql("SELECT id, username, language, plan, words_used, created_at FROM users", engine)
+
+# Mensajes por día
+df_messages['date'] = pd.to_datetime(df_messages['timestamp']).dt.date
+daily = df_messages.groupby('date').size()
+daily.plot(kind='line', title='Mensajes por día')
+plt.savefig('mensajes_diarios.png')
+
+# Distribución de idiomas
+df_users['language'].value_counts().plot(kind='pie', autopct='%1.1f%%')
+plt.title('Distribución de idiomas')
+plt.savefig('idiomas.png')
+```
+
+### 7.3 Herramientas de BI Compatibles
+
+| Herramienta | Compatibilidad | Uso recomendado |
+|---|---|---|
+| **pgAdmin 4** | Nativa (PostgreSQL) | Exploración de datos, consultas ad-hoc |
+| **Metabase** | Conector PostgreSQL | Dashboards interactivos sin código |
+| **Grafana** | Plugin PostgreSQL | Métricas en tiempo real (latencia, usuarios activos) |
+| **Power BI** | Conector PostgreSQL | Reportes de negocio para stakeholders |
+| **Apache Superset** | Conector SQLAlchemy | Visualizaciones complejas open-source |
+
+### 7.4 Análisis en Tiempo Real (Lado Servidor)
+
+El servidor ya implementa dos formas de análisis en tiempo real:
+
+1. **Caché LRU de traducciones**: Almacena hasta 500 pares de traducción en memoria RAM. Al superar el límite, descarta la entrada más antigua. Esto permite medir cuántas traducciones se sirven desde caché vs. cuántas requieren llamada a la API.
+
+2. **Evento `get-stats`**: Emite al cliente el número de canales activos y usuarios conectados en tiempo real.
+
+---
+
+## 8. Instalación y Uso del Sistema
+
+### 8.1 Requisitos Previos
+
+Antes de instalar VozTranslate, el entorno debe contar con:
+
+| Requisito | Versión mínima | Verificación |
+|---|---|---|
+| Node.js | 18.x LTS | `node --version` |
+| npm | 9.x | `npm --version` |
+| PostgreSQL | 14.x | `psql --version` |
+| Cuenta Groq | — | [console.groq.com](https://console.groq.com) (obtener API key gratuita) |
+
+### 8.2 Instalación Paso a Paso
+
+**Paso 1 — Clonar el repositorio**
+```bash
+git clone https://github.com/usuario/VozTranslate.git
+cd VozTranslate
+```
+
+**Paso 2 — Configurar la base de datos PostgreSQL**
+```bash
+# Acceder a PostgreSQL como superusuario
+psql -U postgres
+
+# Dentro de psql, crear la base de datos
+CREATE DATABASE voztranslate;
+\q
+```
+
+Luego conectarse a la base de datos y ejecutar el script de inicialización (ver Sección 2.4).
+
+**Paso 3 — Configurar variables de entorno del servidor**
+```bash
+cd server
+cp .env.example .env
+# Editar .env con los valores correctos:
+# DATABASE_URL=postgresql://postgres:TU_PASSWORD@localhost:5432/voztranslate
+# JWT_SECRET=una_clave_secreta_larga_y_aleatoria
+# GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+**Paso 4 — Instalar dependencias del servidor**
+```bash
+# Dentro de /server
+npm install
+```
+
+**Paso 5 — Instalar dependencias del cliente**
+```bash
+cd ../client
+npm install
+```
+
+**Paso 6 — Iniciar ambos servicios**
+
+Terminal 1 (servidor):
+```bash
+cd server
+npm start
+# → Servidor escuchando en http://localhost:3001
+```
+
+Terminal 2 (cliente):
+```bash
+cd client
+npm run dev
+# → Cliente disponible en http://localhost:5173
+```
+
+### 8.3 Endpoints REST Disponibles
+
+| Método | Ruta | Descripción | Auth requerida |
+|---|---|---|---|
+| `POST` | `/api/auth/register` | Crear cuenta nueva | No |
+| `POST` | `/api/auth/login` | Iniciar sesión | No |
+| `GET` | `/api/auth/me` | Obtener perfil propio | Sí (JWT) |
+| `PUT` | `/api/auth/profile` | Actualizar perfil | Sí (JWT) |
+| `POST` | `/api/auth/check-email` | Verificar si un email existe | No |
+| `POST` | `/api/auth/reset-password` | Restablecer contraseña | No |
+| `GET` | `/api/health` | Estado del servidor | No |
+
+### 8.4 Eventos Socket.io
+
+**Emitidos por el cliente:**
+
+| Evento | Payload | Descripción |
+|---|---|---|
+| `join-channel-by-code` | `{ code, username, language, token }` | Unirse a un canal |
+| `send-message` | `{ text, channelCode, username, language }` | Enviar mensaje de texto |
+| `voice-audio` | `{ audioData (base64), channelCode, username, language }` | Enviar audio para transcripción |
+| `edit-message` | `{ messageId, newText, channelCode, username, language }` | Editar un mensaje |
+| `typing` | `{ channelCode, username, isTyping }` | Indicador de escritura |
+| `create-channel` | `{ nombre, idioma, creador }` | Crear canal privado |
+| `delete-channel` | `{ codigo, username }` | Eliminar canal (solo creador) |
+| `get-stats` | — | Solicitar estadísticas del servidor |
+| `get-word-count` | `{ username }` | Consultar palabras restantes |
+
+**Emitidos por el servidor:**
+
+| Evento | Descripción |
+|---|---|
+| `translated-message` | Mensaje con todas las traducciones listo para renderizar |
+| `join-channel-response` | Confirmación de unión + historial inicial |
+| `canal-miembros-update` | Lista actualizada de miembros del canal |
+| `user-joined-notify` | Notificación de nuevo miembro |
+| `user-left-notify` | Notificación de salida de miembro |
+| `message-edited` | Mensaje editado y re-traducido |
+| `stats-update` | Estadísticas actualizadas del sistema |
+| `words-update` | Contador de palabras del usuario actualizado |
+| `word-limit-reached` | El usuario free llegó al límite mensual |
+| `processing` / `processing-done` | Indicadores de progreso de traducción |
+| `user-typing` | Reenvío del indicador de escritura a la sala |
+| `voice-error` | Error en la transcripción de audio |
+| `channel-deleted-notify` | Canal eliminado por su creador |
+
+### 8.5 Mantenimiento
+
+**Limpiar mensajes antiguos (plan free: 24h de historial)**
+```sql
+DELETE FROM messages
+WHERE timestamp < NOW() - INTERVAL '24 hours'
+  AND canal_codigo IN (
+    SELECT codigo FROM channels WHERE tipo = 'private'
+  );
+```
+
+**Resetear palabras usadas mensualmente (ejecutar el día 1 de cada mes)**
+```sql
+UPDATE users SET words_used = 0 WHERE plan = 'free';
+```
+
+**Monitorear el tamaño de la base de datos**
+```sql
+SELECT pg_size_pretty(pg_database_size('voztranslate')) AS tamaño_total;
+SELECT relname AS tabla, pg_size_pretty(pg_total_relation_size(relid)) AS tamaño
+FROM pg_catalog.pg_statio_user_tables ORDER BY pg_total_relation_size(relid) DESC;
+```
+
+---
+
+## 9. Resumen Técnico para Presentación
+
+### 9.1 Tipo de Base de Datos
+
+**Relacional — PostgreSQL 14+**
+
+VozTranslate usa una base de datos relacional porque:
+- Los datos tienen estructura fija y relaciones claras (usuarios → mensajes → canales).
+- Las consultas requieren joins y agregaciones eficientes.
+- Se necesita integridad referencial garantizada (`FOREIGN KEY`, `UNIQUE`, `NOT NULL`).
+- El tipo de dato `JSONB` permite almacenar de forma flexible las traducciones sin perder los beneficios del modelo relacional.
+
+### 9.2 Lenguajes Utilizados
+
+| Lenguaje | Dónde se usa |
+|---|---|
+| **JavaScript (ES2022)** | Frontend (React) y Backend (Node.js) |
+| **JSX** | Componentes de la interfaz de usuario (React) |
+| **CSS3** | Estilos de la interfaz (variables, animaciones, glassmorphism) |
+| **SQL** | Consultas y definición del esquema en PostgreSQL |
+| **Python 3.11** | Versión alternativa del servidor (Flask + HuggingFace Transformers) — no activa en producción |
+| **HTML5** | Estructura base del cliente web (`index.html`) |
+
+### 9.3 Herramientas y Librerías
+
+**Frontend:**
+- React 18 + Vite 5 — Framework UI y bundler
+- Socket.io Client 4.7 — Comunicación en tiempo real
+- Lucide React — Iconografía
+- Web Audio API (nativo del navegador) — Sonidos de notificación
+- MediaRecorder API (nativo del navegador) — Grabación de audio de voz
+
+**Backend:**
+- Express 4 — Servidor HTTP y API REST
+- Socket.io 4.7 — Servidor WebSocket
+- bcryptjs 3 — Hash de contraseñas
+- jsonwebtoken 9 — Autenticación con tokens JWT
+- Groq SDK 1.1 — Cliente para LLaMA y Whisper
+- pg (node-postgres) — Driver de base de datos
+- dotenv — Gestión de variables de entorno
+
+**Base de datos:**
+- PostgreSQL 14+ — Motor relacional principal
+- JSONB — Tipo de dato para almacenar traducciones como JSON indexado
+
+**Inteligencia Artificial:**
+- **LLaMA 3.3-70B** (vía Groq) — Modelo de lenguaje para traducción multilingüe
+- **Whisper Large V3 Turbo** (vía Groq) — Modelo de reconocimiento de voz (ASR)
+
+**Herramientas de desarrollo:**
+- Vite 5 — HMR (Hot Module Replacement) para desarrollo ágil
+- Node.js 18 LTS — Runtime del servidor
+- Git — Control de versiones
+
+### 9.4 Información Técnica Adicional
+
+**Patrones de diseño implementados:**
+
+| Patrón | Dónde | Descripción |
+|---|---|---|
+| Singleton | `services/socket.js` | Una sola instancia de Socket.io compartida entre componentes |
+| LRU Cache | `server.js` | Caché de hasta 500 traducciones con desalojo del más antiguo |
+| Retry with Backoff | `translateText()` | 2 reintentos con espera exponencial (500ms, 1500ms) ante fallos de API |
+| Component-Based | Frontend React | Interfaz dividida en componentes reutilizables e independientes |
+| Publisher/Subscriber | Socket.io Rooms | Mensajes publicados a una sala y recibidos por todos los suscriptores |
+
+**Decisiones de arquitectura destacadas:**
+
+1. **WebSockets sobre HTTP polling**: Se eligió Socket.io para la mensajería porque el protocolo WebSocket mantiene una conexión persistente, eliminando la latencia de múltiples handshakes HTTP.
+
+2. **Groq sobre modelos locales**: Los modelos de IA (LLaMA, Whisper) se consumen vía API externa (Groq) en lugar de ejecutarse localmente, lo que evita requisitos de hardware GPU y simplifica el despliegue.
+
+3. **Caché LRU de traducciones**: Las mismas frases enviadas repetidamente en el mismo canal (ej: "hola", "gracias") se traducen una vez y se sirven desde memoria, reduciendo el costo de la API y la latencia.
+
+4. **JSONB para traducciones**: En lugar de tener una tabla separada por idioma, se almacena el objeto de traducciones completo en una columna JSONB dentro de cada mensaje, lo que simplifica las consultas de historial.
+
+5. **Paginación de historial**: Los mensajes del historial se cargan en bloques de 50 mediante scroll infinito (lazy loading), evitando cargar miles de mensajes al conectarse.
+
+**Seguridad:**
+
+| Capa | Mecanismo | Amenaza mitigada |
+|---|---|---|
+| Contraseñas | bcrypt (10 rondas de sal) | Robo de base de datos → no se pueden revertir los hashes |
+| Autenticación | JWT (30 días, firmado con secreto) | Suplantación de identidad |
+| Consultas SQL | Parámetros nombrados (`$1, $2`) | SQL Injection |
+| Rate limiting | 1 msg/seg por usuario | Spam y abuso de la API de traducción |
+| Variables sensibles | Archivo `.env` excluido de git | Exposición de credenciales en el repositorio |
+| CORS | Solo acepta origen `localhost:5173` | Peticiones cross-site no autorizadas |
+
+**Planes del sistema:**
+
+| Feature | Plan Free | Plan Pro |
+|---|---|---|
+| Idiomas disponibles | ES, EN | 10+ idiomas |
+| Historial de mensajes | 24 horas | 30 días |
+| Límite mensual de palabras | 1.000 | Ilimitado |
+| Canales privados | Hasta 2 | Ilimitados |
+| Mensajes de voz | Sí | Sí |
+
+---
+
+## 10. Actualizaciones Recientes (Versión Pro, Historial y Testing)
+
+En la última fase del desarrollo, hemos introducido mejoras clave para elevar la calidad, funcionalidad y estabilidad de la plataforma VozTranslate:
+
+### Corrección de Errores y Estabilidad
+- Se resolvieron fallos relacionados con la conexión y latencia en el servidor.
+- Ajustes en el frontend para evitar renders innecesarios y mejorar el rendimiento general durante la transcripción en tiempo real.
+
+### Exportación en Versión Pro
+- **Funcionalidad de Exportación:** Se ha integrado la capacidad para que los usuarios con planes Pro puedan exportar el historial de chat y sus transcripciones en formatos descargables (ej. CSV, PDF o TXT).
+- **Gestor de Datos Avanzado:** Mejoras en la estructura de la base de datos y la UI para facilitar la selección de las conversaciones y el formato de exportación preferido.
+
+### Gestión de Historial
+- **Persistencia de Conversaciones:** El historial de los mensajes, tanto de texto como de voz (traducidos), se conserva permitiendo una consulta retrospectiva más cómoda para el usuario.
+- **Scroll Infinito / Paginación:** Carga progresiva del historial para evitar sobrecargar al cliente cuando existen cientos de mensajes en una sala.
+
+### Pruebas E2E con Cypress
+Para garantizar que las características principales funcionen sin inconvenientes en todos los entornos, implementamos una batería de pruebas de integración y E2E utilizando **Cypress**:
+- **Cobertura de Flujos Principales:** Pruebas automatizadas sobre el registro, login y la navegación entre los distintos canales.
+- **Pruebas de Funcionalidad de Chat:** Verificación del envío y recepción correcta de mensajes.
+- **Entorno de Testing Confiable:** Scripts de Cypress configurados (`cypress.config.js`) y estructurados dentro de los directorios `cypress/e2e` para que el equipo pueda correr las pruebas de forma sistemática y evitar regresiones al añadir nuevas features.
+
+---
+
+*Documentación generada para presentación de examen o EFT de título — DUOC UC, Mayo 2026.*
