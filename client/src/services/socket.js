@@ -8,7 +8,8 @@
 import { io } from 'socket.io-client';
 
 // Dirección del servidor backend (en desarrollo siempre es localhost:3001)
-const URL_SERVIDOR = 'http://localhost:3001';
+// Ahora usamos undefined para que tome el host actual y pase por el proxy de Vite o el host de ngrok
+const URL_SERVIDOR = undefined;
 
 // Creamos la conexión. La opción autoConnect: false le dice a Socket.io
 // que NO se conecte automáticamente al importar este archivo.

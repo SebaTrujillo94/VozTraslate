@@ -1,7 +1,7 @@
 // api.js - funciones para hablar con el servidor
 // reemplazamos el localStorage por llamadas reales al backend con postgres
 
-const API_URL = 'http://localhost:3001';
+const API_URL = '';
 
 export function getToken() {
   return localStorage.getItem('voztranslate_token');
