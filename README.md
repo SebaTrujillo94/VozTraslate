@@ -60,4 +60,6 @@ La aplicación estará disponible localmente, habitualmente en `http://localhost
 
 ## Estructura del Código
 
-El código fuente incluye comentarios explicativos destinados a facilitar la lectura y comprensión técnica de las diferentes capas del sistema, permitiendo que cualquier estudiante de programación pueda revisar, entender y probar la lógica implementada sin inconvenientes.
+El código fuente incluye comentarios explicativos destinados a facilitar la lectura y comprensión técnica de las diferentes capas del sistema, permitiendo que cualquier estudiante de programación pueda revisar, entender y probar la lógica implementada sin inconvenientes ya que, despúes de todo, fue creado por y para estudiantes.
+
+Saludos al Profesor Alberto por la guía durante el desarrollo.
